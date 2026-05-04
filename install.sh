@@ -6,13 +6,13 @@
 #
 # Options (via environment variables):
 #   VERSION     - specific version to install (e.g. v0.1.0). Defaults to latest.
-#   INSTALL_DIR - directory to install to. Defaults to /usr/local/bin.
+#   INSTALL_DIR - directory to install to. Defaults to ~/.local/bin.
 
 set -e
 
 REPO="includeamin/openapi-aggregator"
 BINARY="openapi-aggregator"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -101,17 +101,18 @@ download_and_install() {
   esac
 
   # Install binary
-  if [ -w "$INSTALL_DIR" ]; then
-    mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-  else
-    info "elevated permissions required to install to ${INSTALL_DIR}"
-    sudo mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-  fi
-
+  mkdir -p "${INSTALL_DIR}"
+  mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
   chmod +x "${INSTALL_DIR}/${BINARY}"
 
   info "installed ${BINARY} to ${INSTALL_DIR}/${BINARY}"
   "${INSTALL_DIR}/${BINARY}" --version 2>/dev/null || true
+
+  # Remind user to add to PATH if needed
+  case ":$PATH:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *) info "add ${INSTALL_DIR} to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+  esac
 }
 
 # --- uninstall -------------------------------------------------------------
@@ -122,12 +123,7 @@ uninstall() {
   fi
 
   info "removing ${INSTALL_DIR}/${BINARY}"
-  if [ -w "$INSTALL_DIR" ]; then
-    rm -f "${INSTALL_DIR}/${BINARY}"
-  else
-    info "elevated permissions required to remove from ${INSTALL_DIR}"
-    sudo rm -f "${INSTALL_DIR}/${BINARY}"
-  fi
+  rm -f "${INSTALL_DIR}/${BINARY}"
 
   info "${BINARY} has been uninstalled"
 }
