@@ -71,7 +71,7 @@ jobs:
           echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
           echo "Detected bump type: ${BUMP}"
 
-      - name: Skip if no releasable commits
+      - name: Skip if no new commits
         id: skip_check
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -79,11 +79,12 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --format="%s" | grep -iE '^(feat|fix|perf|refactor)' || true)
-          if [ -z "$COMMITS" ] && [ -z "${{ inputs.bump }}" ]; then
-            echo "No releasable commits found since ${LAST_TAG}, skipping."
+          COMMIT_COUNT=$(git rev-list "${LAST_TAG}..HEAD" --count)
+          if [ "$COMMIT_COUNT" -eq 0 ] && [ -z "${{ inputs.bump }}" ]; then
+            echo "No new commits since ${LAST_TAG}, skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
+            echo "${COMMIT_COUNT} commit(s) since ${LAST_TAG}"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
