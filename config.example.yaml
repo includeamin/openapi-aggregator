@@ -1,0 +1,40 @@
+# Example configuration for openapi-aggregator
+#
+# Sources can be local files (YAML or JSON) or HTTP endpoints.
+# The aggregator auto-detects the format from content.
+
+sources:
+  # Local file sources
+  - name: petstore
+    path: ./specs/petstore.yaml
+
+  - name: users
+    path: ./specs/users.json
+
+  # HTTP source with custom headers
+  - name: billing
+    url: https://billing.example.com/openapi.json
+    headers:
+      Authorization: "Bearer your-token-here"
+      Accept: "application/json"
+
+# Output settings (used by the CLI)
+output:
+  format: yaml  # yaml | json
+
+# Merge behaviour
+merge:
+  # How to handle duplicate paths or component names
+  #   error     – fail immediately (default)
+  #   overwrite – last source wins
+  #   rename    – prefix conflicting names with the source name
+  conflict_strategy: error
+
+  # Prefix every path with /{source_name} to guarantee uniqueness
+  prefix_paths: false
+
+  # Override fields in the merged info object
+  info:
+    title: "My Aggregated API"
+    version: "1.0.0"
+    description: "Combined specification from multiple services"
