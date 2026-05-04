@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use crate::config::{ConflictStrategy, InfoOverride, MergeConfig};
+use crate::config::{ConflictStrategy, InfoOverride, MergeConfig, TagPrefixStrategy};
 use crate::error::Error;
 
 const COMPONENT_TYPES: &[&str] = &[
@@ -18,7 +18,12 @@ const COMPONENT_TYPES: &[&str] = &[
 ];
 
 /// Merge multiple named OpenAPI specs into one according to `config`.
-pub fn merge_specs(specs: Vec<(String, Value)>, config: &MergeConfig) -> Result<Value, Error> {
+///
+/// Each entry is `(source_name, tag_prefix, spec_value)`.
+pub fn merge_specs(
+    specs: Vec<(String, String, Value)>,
+    config: &MergeConfig,
+) -> Result<Value, Error> {
     if specs.is_empty() {
         return Err(Error::NoSources);
     }
@@ -26,7 +31,7 @@ pub fn merge_specs(specs: Vec<(String, Value)>, config: &MergeConfig) -> Result<
     let mut merged = Map::new();
 
     // --- openapi version (from first source) ---
-    if let Some(version) = specs[0].1.get("openapi") {
+    if let Some(version) = specs[0].2.get("openapi") {
         merged.insert("openapi".into(), version.clone());
     }
 
@@ -40,13 +45,18 @@ pub fn merge_specs(specs: Vec<(String, Value)>, config: &MergeConfig) -> Result<
     let mut merged_tags: Vec<Value> = Vec::new();
     let mut merged_servers: Vec<Value> = Vec::new();
 
-    for (source_name, mut spec) in specs {
+    for (source_name, tag_prefix, mut spec) in specs {
         // Phase 1: detect component conflicts and build a $ref rename map
         let rename_map = build_rename_map(&source_name, &spec, &merged_components, config)?;
 
         // Phase 2: rewrite $refs in the source spec if needed
         if !rename_map.is_empty() {
             rewrite_refs(&mut spec, &rename_map);
+        }
+
+        // Phase 2b: rewrite tag references in operations before merging paths
+        if config.tag_prefix == TagPrefixStrategy::SourceName {
+            rewrite_spec_operation_tags(&mut spec, &tag_prefix, config);
         }
 
         // Phase 3a: merge paths
@@ -61,17 +71,34 @@ pub fn merge_specs(specs: Vec<(String, Value)>, config: &MergeConfig) -> Result<
             config,
         )?;
 
-        // Phase 3c: merge tags (deduplicate by name)
+        // Phase 3c: merge tags
         if let Some(Value::Array(tags)) = spec.get("tags") {
             for tag in tags {
-                let tag_name = tag.get("name").and_then(|n| n.as_str());
-                let already_exists = tag_name.is_some_and(|n| {
+                let original_name = tag.get("name").and_then(|n| n.as_str());
+                let prefixed_name = original_name.map(|n| {
+                    if config.tag_prefix == TagPrefixStrategy::SourceName {
+                        format!("{}{}{}", tag_prefix, config.tag_separator, n)
+                    } else {
+                        n.to_string()
+                    }
+                });
+
+                let check_name = prefixed_name.as_deref();
+                let already_exists = check_name.is_some_and(|n| {
                     merged_tags
                         .iter()
                         .any(|t| t.get("name").and_then(|v| v.as_str()) == Some(n))
                 });
                 if !already_exists {
-                    merged_tags.push(tag.clone());
+                    let mut new_tag = tag.clone();
+                    if config.tag_prefix == TagPrefixStrategy::SourceName {
+                        if let Some(obj) = new_tag.as_object_mut() {
+                            if let Some(name) = prefixed_name {
+                                obj.insert("name".into(), Value::String(name));
+                            }
+                        }
+                    }
+                    merged_tags.push(new_tag);
                 }
             }
         }
@@ -116,9 +143,9 @@ pub fn merge_specs(specs: Vec<(String, Value)>, config: &MergeConfig) -> Result<
 // helpers
 // ---------------------------------------------------------------------------
 
-fn build_info(specs: &[(String, Value)], info_override: Option<&InfoOverride>) -> Value {
+fn build_info(specs: &[(String, String, Value)], info_override: Option<&InfoOverride>) -> Value {
     let mut info = specs[0]
-        .1
+        .2
         .get("info")
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
@@ -137,6 +164,35 @@ fn build_info(specs: &[(String, Value)], info_override: Option<&InfoOverride>) -
     }
 
     info
+}
+
+/// Rewrite tag arrays inside all operations of a source spec, prefixing each tag name.
+fn rewrite_spec_operation_tags(spec: &mut Value, tag_prefix: &str, config: &MergeConfig) {
+    let http_methods = [
+        "get", "post", "put", "patch", "delete", "options", "head", "trace",
+    ];
+
+    if let Some(Value::Object(paths)) = spec.get_mut("paths") {
+        for (_path_key, path_item) in paths.iter_mut() {
+            if let Some(obj) = path_item.as_object_mut() {
+                for method in &http_methods {
+                    if let Some(operation) = obj.get_mut(*method) {
+                        if let Some(Value::Array(tags)) = operation.get_mut("tags") {
+                            for tag_val in tags.iter_mut() {
+                                if let Some(tag_str) = tag_val.as_str() {
+                                    let prefixed = format!(
+                                        "{}{}{}",
+                                        tag_prefix, config.tag_separator, tag_str
+                                    );
+                                    *tag_val = Value::String(prefixed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// For the rename strategy: figure out which component names in `spec` clash
@@ -347,8 +403,8 @@ mod tests {
     #[test]
     fn merge_no_conflicts() {
         let specs = vec![
-            ("petstore".into(), petstore_spec()),
-            ("users".into(), users_spec()),
+            ("petstore".into(), "petstore".into(), petstore_spec()),
+            ("users".into(), "users".into(), users_spec()),
         ];
         let config = MergeConfig::default();
         let merged = merge_specs(specs, &config).unwrap();
@@ -361,7 +417,10 @@ mod tests {
 
     #[test]
     fn merge_conflict_error_strategy() {
-        let specs = vec![("a".into(), petstore_spec()), ("b".into(), petstore_spec())];
+        let specs = vec![
+            ("a".into(), "a".into(), petstore_spec()),
+            ("b".into(), "b".into(), petstore_spec()),
+        ];
         let config = MergeConfig::default(); // Error strategy
         let result = merge_specs(specs, &config);
         assert!(result.is_err());
@@ -372,7 +431,10 @@ mod tests {
         let mut alt = petstore_spec();
         alt["paths"]["/pets"]["get"]["summary"] = json!("Overwritten");
 
-        let specs = vec![("a".into(), petstore_spec()), ("b".into(), alt)];
+        let specs = vec![
+            ("a".into(), "a".into(), petstore_spec()),
+            ("b".into(), "b".into(), alt),
+        ];
         let config = MergeConfig {
             conflict_strategy: ConflictStrategy::Overwrite,
             ..Default::default()
@@ -386,7 +448,10 @@ mod tests {
         let mut alt = petstore_spec();
         alt["components"]["schemas"]["Pet"]["properties"]["species"] = json!({ "type": "string" });
 
-        let specs = vec![("a".into(), petstore_spec()), ("b".into(), alt)];
+        let specs = vec![
+            ("a".into(), "a".into(), petstore_spec()),
+            ("b".into(), "b".into(), alt),
+        ];
         let config = MergeConfig {
             conflict_strategy: ConflictStrategy::Rename,
             ..Default::default()
@@ -401,8 +466,8 @@ mod tests {
     #[test]
     fn merge_with_prefix_paths() {
         let specs = vec![
-            ("petstore".into(), petstore_spec()),
-            ("users".into(), users_spec()),
+            ("petstore".into(), "petstore".into(), petstore_spec()),
+            ("users".into(), "users".into(), users_spec()),
         ];
         let config = MergeConfig {
             prefix_paths: true,
@@ -415,7 +480,7 @@ mod tests {
 
     #[test]
     fn merge_with_info_override() {
-        let specs = vec![("a".into(), petstore_spec())];
+        let specs = vec![("a".into(), "a".into(), petstore_spec())];
         let config = MergeConfig {
             info: Some(InfoOverride {
                 title: Some("Custom Title".into()),
@@ -474,7 +539,7 @@ mod tests {
             {"name": "users", "description": "Users operations"}
         ]);
 
-        let specs = vec![("a".into(), a), ("b".into(), b)];
+        let specs = vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)];
         let config = MergeConfig::default();
         let merged = merge_specs(specs, &config).unwrap();
 
@@ -486,5 +551,77 @@ mod tests {
     fn merge_empty_returns_error() {
         let config = MergeConfig::default();
         assert!(merge_specs(vec![], &config).is_err());
+    }
+
+    #[test]
+    fn merge_tags_with_source_name_prefix() {
+        let mut a = petstore_spec();
+        a["tags"] = json!([{"name": "pets", "description": "Pets operations"}]);
+        a["paths"]["/pets"]["get"]["tags"] = json!(["pets"]);
+
+        let mut b = users_spec();
+        b["tags"] = json!([{"name": "users", "description": "Users operations"}]);
+        b["paths"]["/users"]["get"]["tags"] = json!(["users"]);
+
+        let specs = vec![
+            ("petstore".into(), "petstore".into(), a),
+            ("users".into(), "users".into(), b),
+        ];
+        let config = MergeConfig {
+            tag_prefix: TagPrefixStrategy::SourceName,
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        let tags = merged["tags"].as_array().unwrap();
+        let tag_names: Vec<&str> = tags
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(tag_names.contains(&"petstore/pets"));
+        assert!(tag_names.contains(&"users/users"));
+
+        // Operations should also reference the prefixed tags
+        let pet_tags = merged["paths"]["/pets"]["get"]["tags"].as_array().unwrap();
+        assert_eq!(pet_tags[0], "petstore/pets");
+    }
+
+    #[test]
+    fn merge_tags_with_custom_separator() {
+        let mut a = petstore_spec();
+        a["tags"] = json!([{"name": "pets"}]);
+        a["paths"]["/pets"]["get"]["tags"] = json!(["pets"]);
+
+        let specs = vec![("petstore".into(), "petstore".into(), a)];
+        let config = MergeConfig {
+            tag_prefix: TagPrefixStrategy::SourceName,
+            tag_separator: " - ".into(),
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        let tags = merged["tags"].as_array().unwrap();
+        assert_eq!(tags[0]["name"], "petstore - pets");
+    }
+
+    #[test]
+    fn merge_tags_with_custom_tag_prefix() {
+        let mut a = petstore_spec();
+        a["tags"] = json!([{"name": "pets"}]);
+        a["paths"]["/pets"]["get"]["tags"] = json!(["pets"]);
+
+        // Use a custom tag prefix different from the source name
+        let specs = vec![("petstore".into(), "MyPets".into(), a)];
+        let config = MergeConfig {
+            tag_prefix: TagPrefixStrategy::SourceName,
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        let tags = merged["tags"].as_array().unwrap();
+        assert_eq!(tags[0]["name"], "MyPets/pets");
+
+        let op_tags = merged["paths"]["/pets"]["get"]["tags"].as_array().unwrap();
+        assert_eq!(op_tags[0], "MyPets/pets");
     }
 }

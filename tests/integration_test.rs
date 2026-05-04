@@ -14,6 +14,7 @@ async fn load_yaml_file_source() {
     let source = Source::File {
         name: Some("petstore".into()),
         path: fixtures().join("petstore.yaml"),
+        tag_prefix: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "petstore");
@@ -26,6 +27,7 @@ async fn load_json_file_source() {
     let source = Source::File {
         name: Some("conflict".into()),
         path: fixtures().join("conflict.json"),
+        tag_prefix: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "conflict");
@@ -39,10 +41,12 @@ async fn aggregate_two_specs_from_config() {
             Source::File {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
+                tag_prefix: None,
             },
             Source::File {
                 name: Some("users".into()),
                 path: fixtures().join("users.yaml"),
+                tag_prefix: None,
             },
         ],
         output: Default::default(),
@@ -73,10 +77,12 @@ async fn aggregate_conflict_errors_by_default() {
             Source::File {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
+                tag_prefix: None,
             },
             Source::File {
                 name: Some("conflict".into()),
                 path: fixtures().join("conflict.json"),
+                tag_prefix: None,
             },
         ],
         output: Default::default(),
@@ -96,17 +102,18 @@ async fn aggregate_conflict_rename_rewrites_refs() {
             Source::File {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
+                tag_prefix: None,
             },
             Source::File {
                 name: Some("alt".into()),
                 path: fixtures().join("conflict.json"),
+                tag_prefix: None,
             },
         ],
         output: Default::default(),
         merge: MergeConfig {
             conflict_strategy: ConflictStrategy::Rename,
-            prefix_paths: false,
-            info: None,
+            ..Default::default()
         },
     };
 
@@ -157,6 +164,7 @@ async fn merge_specs_preserves_openapi_version() {
     let specs = vec![
         (
             "a".into(),
+            "a".into(),
             serde_json::json!({
                 "openapi": "3.0.3",
                 "info": {"title": "A", "version": "1"},
@@ -164,6 +172,7 @@ async fn merge_specs_preserves_openapi_version() {
             }),
         ),
         (
+            "b".into(),
             "b".into(),
             serde_json::json!({
                 "openapi": "3.0.3",
@@ -203,6 +212,7 @@ async fn http_source_with_headers() {
         headers: [("Authorization".into(), "Bearer test-token".into())]
             .into_iter()
             .collect(),
+        tag_prefix: None,
     };
 
     let (name, spec) = load_source(&source).await.unwrap();

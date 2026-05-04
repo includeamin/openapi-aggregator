@@ -24,10 +24,16 @@ pub enum Source {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        /// Custom tag prefix for this source (used when `tag_prefix` is `source_name`).
+        /// If set, overrides the source name as the prefix.
+        tag_prefix: Option<String>,
     },
     File {
         name: Option<String>,
         path: PathBuf,
+        /// Custom tag prefix for this source (used when `tag_prefix` is `source_name`).
+        /// If set, overrides the source name as the prefix.
+        tag_prefix: Option<String>,
     },
 }
 
@@ -41,6 +47,15 @@ impl Source {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".into())
             }),
+        }
+    }
+
+    /// Return the tag prefix for this source: custom `tag_prefix` field if set, otherwise the display name.
+    pub fn tag_prefix(&self) -> String {
+        match self {
+            Source::Http { tag_prefix, .. } | Source::File { tag_prefix, .. } => {
+                tag_prefix.clone().unwrap_or_else(|| self.display_name())
+            }
         }
     }
 }
@@ -70,7 +85,7 @@ pub enum OutputFormat {
 }
 
 /// Options that control how specs are merged.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MergeConfig {
     /// Strategy for handling duplicate paths or component names.
     #[serde(default)]
@@ -78,8 +93,43 @@ pub struct MergeConfig {
     /// If `true`, every path from each source is prefixed with `/{source_name}`.
     #[serde(default)]
     pub prefix_paths: bool,
+    /// Controls how tags from each source are prefixed.
+    /// - `none` (default) – tags are merged as-is, deduplicated by name.
+    /// - `source_name` – tags are prefixed with `{source_name}/{tag_name}`.
+    #[serde(default)]
+    pub tag_prefix: TagPrefixStrategy,
+    /// Separator used between the prefix and the tag name. Defaults to `/`.
+    #[serde(default = "default_tag_separator")]
+    pub tag_separator: String,
     /// Override the `info` block in the merged output.
     pub info: Option<InfoOverride>,
+}
+
+impl Default for MergeConfig {
+    fn default() -> Self {
+        Self {
+            conflict_strategy: ConflictStrategy::default(),
+            prefix_paths: false,
+            tag_prefix: TagPrefixStrategy::default(),
+            tag_separator: default_tag_separator(),
+            info: None,
+        }
+    }
+}
+
+fn default_tag_separator() -> String {
+    "/".into()
+}
+
+/// How to prefix tags from each source.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TagPrefixStrategy {
+    /// Keep original tag names; deduplicate by name.
+    #[default]
+    None,
+    /// Prefix each tag with its source name.
+    SourceName,
 }
 
 /// How to resolve naming conflicts during merge.

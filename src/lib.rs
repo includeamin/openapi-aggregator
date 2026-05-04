@@ -3,7 +3,9 @@ pub mod error;
 pub mod merge;
 pub mod source;
 
-pub use config::{Config, ConflictStrategy, InfoOverride, MergeConfig, OutputFormat, Source};
+pub use config::{
+    Config, ConflictStrategy, InfoOverride, MergeConfig, OutputFormat, Source, TagPrefixStrategy,
+};
 pub use error::Error;
 pub use merge::merge_specs;
 pub use source::load_source;
@@ -18,7 +20,9 @@ pub async fn aggregate(config: &Config) -> Result<serde_json::Value, Error> {
 
     let mut specs = Vec::with_capacity(config.sources.len());
     for src in &config.sources {
-        specs.push(load_source(src).await?);
+        let (name, spec) = load_source(src).await?;
+        let tag_prefix = src.tag_prefix();
+        specs.push((name, tag_prefix, spec));
     }
 
     merge_specs(specs, &config.merge)

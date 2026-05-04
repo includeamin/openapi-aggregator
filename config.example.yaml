@@ -7,6 +7,7 @@ sources:
   # Local file sources
   - name: petstore
     path: ./specs/petstore.yaml
+    # tag_prefix: "MyPets"  # optional: override the prefix for this source's tags
 
   - name: users
     path: ./specs/users.json
@@ -32,6 +33,14 @@ merge:
 
   # Prefix every path with /{source_name} to guarantee uniqueness
   prefix_paths: false
+
+  # How to prefix tags from each source
+  #   none        – keep original tag names, deduplicate (default)
+  #   source_name – prefix each tag with the source name (or custom tag_prefix)
+  tag_prefix: none
+
+  # Separator between prefix and tag name (default: "/")
+  # tag_separator: "/"
 
   # Override fields in the merged info object
   info:
