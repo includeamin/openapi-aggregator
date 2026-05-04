@@ -18,20 +18,20 @@ Available as both a **Rust library** and a **CLI tool**.
 ### Quick install (Linux / macOS)
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
+curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh
 ```
 
 Install a specific version or to a custom directory:
 
 ```sh
-VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
-INSTALL_DIR=~/.local/bin curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
+VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh
+INSTALL_DIR=~/.local/bin curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh
 ```
 
 Uninstall:
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh -s -- --uninstall
+curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh -s -- --uninstall
 ```
 
 ### From source

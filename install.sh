@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install/uninstall script for openapi-aggregator
 # Usage:
-#   Install:    curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
-#   Uninstall:  curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh -s -- --uninstall
+#   Install:    curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh
+#   Uninstall:  curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh -s -- --uninstall
 #
 # Options (via environment variables):
 #   VERSION     - specific version to install (e.g. v0.1.0). Defaults to latest.
@@ -10,7 +10,7 @@
 
 set -e
 
-REPO="OWNER/openapi-aggregator"
+REPO="includeamin/openapi-aggregator"
 BINARY="openapi-aggregator"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
