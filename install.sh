@@ -1,9 +1,11 @@
 #!/bin/sh
-# Install script for openapi-aggregator
-# Usage: curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
+# Install/uninstall script for openapi-aggregator
+# Usage:
+#   Install:    curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
+#   Uninstall:  curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh -s -- --uninstall
 #
 # Options (via environment variables):
-#   VERSION   - specific version to install (e.g. v0.1.0). Defaults to latest.
+#   VERSION     - specific version to install (e.g. v0.1.0). Defaults to latest.
 #   INSTALL_DIR - directory to install to. Defaults to /usr/local/bin.
 
 set -e
@@ -112,10 +114,34 @@ download_and_install() {
   "${INSTALL_DIR}/${BINARY}" --version 2>/dev/null || true
 }
 
+# --- uninstall -------------------------------------------------------------
+
+uninstall() {
+  if [ ! -f "${INSTALL_DIR}/${BINARY}" ]; then
+    error "${BINARY} not found in ${INSTALL_DIR}"
+  fi
+
+  info "removing ${INSTALL_DIR}/${BINARY}"
+  if [ -w "$INSTALL_DIR" ]; then
+    rm -f "${INSTALL_DIR}/${BINARY}"
+  else
+    info "elevated permissions required to remove from ${INSTALL_DIR}"
+    sudo rm -f "${INSTALL_DIR}/${BINARY}"
+  fi
+
+  info "${BINARY} has been uninstalled"
+}
+
 # --- main ------------------------------------------------------------------
 
-detect_target
-resolve_version
-download_and_install
-
-info "done!"
+case "${1:-}" in
+  --uninstall)
+    uninstall
+    ;;
+  *)
+    detect_target
+    resolve_version
+    download_and_install
+    info "done!"
+    ;;
+esac

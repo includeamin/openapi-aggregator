@@ -28,6 +28,12 @@ VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggreg
 INSTALL_DIR=~/.local/bin curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh
 ```
 
+Uninstall:
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/OWNER/openapi-aggregator/main/install.sh | sh -s -- --uninstall
+```
+
 ### From source
 
 ```sh
