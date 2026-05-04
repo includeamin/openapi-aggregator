@@ -72,6 +72,7 @@ merge:
 ### Source detection
 
 Sources are detected automatically by their fields:
+
 - If `url` is present → HTTP source
 - If `path` is present → file source (YAML or JSON auto-detected from content)
 
