@@ -4,7 +4,8 @@ pub mod merge;
 pub mod source;
 
 pub use config::{
-    Config, ConflictStrategy, InfoOverride, MergeConfig, OutputFormat, Source, TagPrefixStrategy,
+    Config, ConflictStrategy, InfoOverride, MergeConfig, OutputFormat, ServerEntry, Source,
+    TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
 pub use merge::merge_specs;
