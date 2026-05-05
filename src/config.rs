@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -27,6 +28,9 @@ pub enum Source {
         /// Custom tag prefix for this source (used when `tag_prefix` is `source_name`).
         /// If set, overrides the source name as the prefix.
         tag_prefix: Option<String>,
+        /// Additional blocks deep-merged into this source spec before merge.
+        /// Can be used for vendor extensions or any custom OpenAPI blocks.
+        additional_blocks: Option<Value>,
     },
     File {
         name: Option<String>,
@@ -34,6 +38,9 @@ pub enum Source {
         /// Custom tag prefix for this source (used when `tag_prefix` is `source_name`).
         /// If set, overrides the source name as the prefix.
         tag_prefix: Option<String>,
+        /// Additional blocks deep-merged into this source spec before merge.
+        /// Can be used for vendor extensions or any custom OpenAPI blocks.
+        additional_blocks: Option<Value>,
     },
 }
 

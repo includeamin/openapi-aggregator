@@ -15,6 +15,7 @@ async fn load_yaml_file_source() {
         name: Some("petstore".into()),
         path: fixtures().join("petstore.yaml"),
         tag_prefix: None,
+        additional_blocks: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "petstore");
@@ -28,6 +29,7 @@ async fn load_json_file_source() {
         name: Some("conflict".into()),
         path: fixtures().join("conflict.json"),
         tag_prefix: None,
+        additional_blocks: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "conflict");
@@ -42,11 +44,13 @@ async fn aggregate_two_specs_from_config() {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
             Source::File {
                 name: Some("users".into()),
                 path: fixtures().join("users.yaml"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
         ],
         output: Default::default(),
@@ -71,6 +75,48 @@ async fn aggregate_two_specs_from_config() {
 }
 
 #[tokio::test]
+async fn aggregate_applies_additional_blocks_per_source() {
+    let config = Config {
+        sources: vec![
+            Source::File {
+                name: Some("petstore".into()),
+                path: fixtures().join("petstore.yaml"),
+                tag_prefix: None,
+                additional_blocks: Some(serde_json::json!({
+                    "x-custom-root": {
+                        "owner": "platform"
+                    },
+                    "paths": {
+                        "/pets": {
+                            "get": {
+                                "x-custom-operation": {
+                                    "rate_limit": 100
+                                }
+                            }
+                        }
+                    }
+                })),
+            },
+            Source::File {
+                name: Some("users".into()),
+                path: fixtures().join("users.yaml"),
+                tag_prefix: None,
+                additional_blocks: None,
+            },
+        ],
+        output: Default::default(),
+        merge: MergeConfig::default(),
+    };
+
+    let merged = aggregate(&config).await.unwrap();
+    assert_eq!(merged["x-custom-root"]["owner"], "platform");
+    assert_eq!(
+        merged["paths"]["/pets"]["get"]["x-custom-operation"]["rate_limit"],
+        100
+    );
+}
+
+#[tokio::test]
 async fn aggregate_conflict_errors_by_default() {
     let config = Config {
         sources: vec![
@@ -78,11 +124,13 @@ async fn aggregate_conflict_errors_by_default() {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
             Source::File {
                 name: Some("conflict".into()),
                 path: fixtures().join("conflict.json"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
         ],
         output: Default::default(),
@@ -103,11 +151,13 @@ async fn aggregate_conflict_rename_rewrites_refs() {
                 name: Some("petstore".into()),
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
             Source::File {
                 name: Some("alt".into()),
                 path: fixtures().join("conflict.json"),
                 tag_prefix: None,
+                additional_blocks: None,
             },
         ],
         output: Default::default(),
@@ -213,6 +263,7 @@ async fn http_source_with_headers() {
             .into_iter()
             .collect(),
         tag_prefix: None,
+        additional_blocks: None,
     };
 
     let (name, spec) = load_source(&source).await.unwrap();

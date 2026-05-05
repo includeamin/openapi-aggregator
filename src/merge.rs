@@ -44,6 +44,7 @@ pub fn merge_specs(
     let mut merged_components: HashMap<String, Map<String, Value>> = HashMap::new();
     let mut merged_tags: Vec<Value> = Vec::new();
     let mut merged_servers: Vec<Value> = Vec::new();
+    let mut merged_custom_top_level = Map::new();
 
     for (source_name, tag_prefix, mut spec) in specs {
         // Phase 1: detect component conflicts and build a $ref rename map
@@ -117,6 +118,24 @@ pub fn merge_specs(
                 }
             }
         }
+
+        // Phase 3e: merge non-standard top-level blocks (e.g. vendor extensions)
+        if let Some(root) = spec.as_object() {
+            for (key, value) in root {
+                if is_reserved_top_level_key(key) {
+                    continue;
+                }
+                if let Some(existing) = merged_custom_top_level.get_mut(key) {
+                    deep_merge_value(existing, value);
+                } else {
+                    merged_custom_top_level.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    for (key, value) in merged_custom_top_level {
+        merged.insert(key, value);
     }
 
     merged.insert("paths".into(), Value::Object(merged_paths));
@@ -193,6 +212,30 @@ fn build_info(specs: &[(String, String, Value)], info_override: Option<&InfoOver
     }
 
     info
+}
+
+fn is_reserved_top_level_key(key: &str) -> bool {
+    matches!(
+        key,
+        "openapi" | "info" | "paths" | "components" | "tags" | "servers"
+    )
+}
+
+fn deep_merge_value(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(target_map), Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                if let Some(existing) = target_map.get_mut(key) {
+                    deep_merge_value(existing, patch_value);
+                } else {
+                    target_map.insert(key.clone(), patch_value.clone());
+                }
+            }
+        }
+        (target_slot, patch_value) => {
+            *target_slot = patch_value.clone();
+        }
+    }
 }
 
 /// Rewrite tag arrays inside all operations of a source spec, prefixing each tag name.
