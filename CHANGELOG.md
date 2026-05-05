@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-05-05
+
+### Features
+
+- Support custom blocks
+
 ## [0.4.0] - 2026-05-05
 
 ### Features
