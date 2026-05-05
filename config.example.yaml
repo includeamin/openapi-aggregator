@@ -8,6 +8,14 @@ sources:
   - name: petstore
     path: ./specs/petstore.yaml
     # tag_prefix: "MyPets"  # optional: override the prefix for this source's tags
+    # additional_blocks:      # optional: deep-merged into this source spec
+    #   x-custom-root:
+    #     enabled: true
+    #   paths:
+    #     /pets:
+    #       get:
+    #         x-custom-operation:
+    #           rate_limit: 100
 
   - name: users
     path: ./specs/users.json
@@ -18,6 +26,9 @@ sources:
     headers:
       Authorization: "Bearer your-token-here"
       Accept: "application/json"
+    # additional_blocks:
+    #   x-another-extension:
+    #     key: value
 
 # Output settings (used by the CLI)
 output:

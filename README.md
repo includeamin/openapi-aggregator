@@ -12,6 +12,7 @@ Available as both a **Rust library** and a **CLI tool**.
 - **`$ref` rewriting** – when using the `rename` strategy, `$ref` pointers are automatically updated
 - **Path prefixing** – optionally prefix every path with the source name to guarantee uniqueness
 - **Info override** – set a custom `title`, `version`, and `description` in the merged output
+- **Per-source custom blocks** – deep-merge arbitrary OpenAPI blocks/extensions from config (provider-agnostic)
 
 ## Installation
 
@@ -68,6 +69,14 @@ Create an `openapi-aggregator.yaml` (see [config.example.yaml](config.example.ya
 sources:
   - name: petstore
     path: ./specs/petstore.yaml
+    additional_blocks:
+      x-custom-root:
+        enabled: true
+      paths:
+        /pets:
+          get:
+            x-custom-operation:
+              rate_limit: 100
 
   - name: users
     path: ./specs/users.json
@@ -95,6 +104,10 @@ Sources are detected automatically by their fields:
 - If `url` is present → HTTP source
 - If `path` is present → file source (YAML or JSON auto-detected from content)
 
+### Additional source blocks
+
+Each source can define `additional_blocks` as any YAML/JSON object. It is deep-merged into that source document before merge, so you can inject vendor extensions (for example API gateway related `x-...` blocks) or other custom OpenAPI fragments without adding provider-specific fields.
+
 ## Library Usage
 
 ```rust
@@ -107,6 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Source::File {
                 name: Some("petstore".into()),
                 path: "./specs/petstore.yaml".into(),
+              additional_blocks: None,
+              tag_prefix: None,
             },
             Source::Http {
                 name: Some("billing".into()),
@@ -114,6 +129,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 headers: [("Authorization".into(), "Bearer token".into())]
                     .into_iter()
                     .collect(),
+              additional_blocks: None,
+              tag_prefix: None,
             },
         ],
         output: Default::default(),

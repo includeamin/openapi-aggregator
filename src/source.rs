@@ -11,7 +11,7 @@ pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
                 path: path.display().to_string(),
                 source: e,
             })?;
-            let value = parse_content(&content)?;
+            let value = parse_and_prepare(&content, source)?;
             validate_openapi(&value, &source.display_name())?;
             Ok((source.display_name(), value))
         }
@@ -29,9 +29,51 @@ pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
                 url: url.clone(),
                 source: e,
             })?;
-            let value = parse_content(&content)?;
+            let value = parse_and_prepare(&content, source)?;
             validate_openapi(&value, &source.display_name())?;
             Ok((source.display_name(), value))
+        }
+    }
+}
+
+fn parse_and_prepare(content: &str, source: &Source) -> Result<Value, Error> {
+    let mut value = parse_content(content)?;
+    if let Some(blocks) = source_additional_blocks(source) {
+        if !blocks.is_object() {
+            return Err(Error::InvalidSpec {
+                name: source.display_name(),
+                reason: "'additional_blocks' must be a mapping/object".into(),
+            });
+        }
+        deep_merge(&mut value, blocks);
+    }
+    Ok(value)
+}
+
+fn source_additional_blocks(source: &Source) -> Option<&Value> {
+    match source {
+        Source::File {
+            additional_blocks, ..
+        }
+        | Source::Http {
+            additional_blocks, ..
+        } => additional_blocks.as_ref(),
+    }
+}
+
+fn deep_merge(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(target_map), Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                if let Some(existing) = target_map.get_mut(key) {
+                    deep_merge(existing, patch_value);
+                } else {
+                    target_map.insert(key.clone(), patch_value.clone());
+                }
+            }
+        }
+        (target_slot, patch_value) => {
+            *target_slot = patch_value.clone();
         }
     }
 }
@@ -62,6 +104,8 @@ fn validate_openapi(value: &Value, source_name: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_json_content() {
@@ -87,5 +131,56 @@ mod tests {
     fn validate_rejects_v2() {
         let v = serde_json::json!({"openapi": "2.0"});
         assert!(validate_openapi(&v, "test").is_err());
+    }
+
+    #[test]
+    fn additional_blocks_are_deep_merged() {
+        let source = Source::File {
+            name: Some("test".into()),
+            path: PathBuf::from("ignored.yaml"),
+            tag_prefix: None,
+            additional_blocks: Some(json!({
+                "x-vendor-root": { "enabled": true },
+                "paths": {
+                    "/pets": {
+                        "get": {
+                            "x-vendor-extension": { "timeout": 3000 }
+                        }
+                    }
+                }
+            })),
+        };
+
+        let base = r#"{
+            "openapi": "3.0.3",
+            "info": {"title": "T", "version": "1"},
+            "paths": {
+                "/pets": {
+                    "get": {"summary": "list pets"}
+                }
+            }
+        }"#;
+
+        let merged = parse_and_prepare(base, &source).unwrap();
+        assert_eq!(merged["x-vendor-root"]["enabled"], true);
+        assert_eq!(merged["paths"]["/pets"]["get"]["summary"], "list pets");
+        assert_eq!(
+            merged["paths"]["/pets"]["get"]["x-vendor-extension"]["timeout"],
+            3000
+        );
+    }
+
+    #[test]
+    fn additional_blocks_must_be_object() {
+        let source = Source::File {
+            name: Some("test".into()),
+            path: PathBuf::from("ignored.yaml"),
+            tag_prefix: None,
+            additional_blocks: Some(json!([1, 2, 3])),
+        };
+
+        let base = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;
+        let err = parse_and_prepare(base, &source).unwrap_err().to_string();
+        assert!(err.contains("additional_blocks"));
     }
 }
