@@ -47,3 +47,17 @@ merge:
     title: "My Aggregated API"
     version: "1.0.0"
     description: "Combined specification from multiple services"
+
+  # Explicit servers for the merged spec (replaces any servers from sources)
+  # servers:
+  #   - url: https://api.example.com
+  #     description: Production
+  #   - url: https://staging.example.com
+  #     description: Staging
+
+  # Explicit tags for the merged spec (replaces any tags from sources)
+  # tags:
+  #   - name: pets
+  #     description: Pet operations
+  #   - name: users
+  #     description: User operations

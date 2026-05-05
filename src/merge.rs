@@ -129,10 +129,39 @@ pub fn merge_specs(
         merged.insert("components".into(), Value::Object(comp_obj));
     }
 
-    if !merged_tags.is_empty() {
+    // --- tags: config override takes priority, then merged from sources ---
+    if let Some(config_tags) = &config.tags {
+        let tags_value: Vec<Value> = config_tags
+            .iter()
+            .map(|t| {
+                let mut obj = Map::new();
+                obj.insert("name".into(), Value::String(t.name.clone()));
+                if let Some(desc) = &t.description {
+                    obj.insert("description".into(), Value::String(desc.clone()));
+                }
+                Value::Object(obj)
+            })
+            .collect();
+        merged.insert("tags".into(), Value::Array(tags_value));
+    } else if !merged_tags.is_empty() {
         merged.insert("tags".into(), Value::Array(merged_tags));
     }
-    if !merged_servers.is_empty() {
+
+    // --- servers: config override takes priority, then merged from sources ---
+    if let Some(config_servers) = &config.servers {
+        let servers_value: Vec<Value> = config_servers
+            .iter()
+            .map(|s| {
+                let mut obj = Map::new();
+                obj.insert("url".into(), Value::String(s.url.clone()));
+                if let Some(desc) = &s.description {
+                    obj.insert("description".into(), Value::String(desc.clone()));
+                }
+                Value::Object(obj)
+            })
+            .collect();
+        merged.insert("servers".into(), Value::Array(servers_value));
+    } else if !merged_servers.is_empty() {
         merged.insert("servers".into(), Value::Array(merged_servers));
     }
 
@@ -623,5 +652,83 @@ mod tests {
 
         let op_tags = merged["paths"]["/pets"]["get"]["tags"].as_array().unwrap();
         assert_eq!(op_tags[0], "MyPets/pets");
+    }
+
+    #[test]
+    fn merge_with_servers_override() {
+        use crate::config::ServerEntry;
+
+        let specs = vec![("a".into(), "a".into(), petstore_spec())];
+        let config = MergeConfig {
+            servers: Some(vec![
+                ServerEntry {
+                    url: "https://api.example.com".into(),
+                    description: Some("Production".into()),
+                },
+                ServerEntry {
+                    url: "https://staging.example.com".into(),
+                    description: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        let servers = merged["servers"].as_array().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0]["url"], "https://api.example.com");
+        assert_eq!(servers[0]["description"], "Production");
+        assert_eq!(servers[1]["url"], "https://staging.example.com");
+        assert!(servers[1].get("description").is_none());
+    }
+
+    #[test]
+    fn merge_with_tags_override() {
+        use crate::config::TagEntry;
+
+        let mut a = petstore_spec();
+        a["tags"] = json!([{"name": "pets", "description": "From source"}]);
+
+        let specs = vec![("a".into(), "a".into(), a)];
+        let config = MergeConfig {
+            tags: Some(vec![
+                TagEntry {
+                    name: "animals".into(),
+                    description: Some("Animal operations".into()),
+                },
+                TagEntry {
+                    name: "admin".into(),
+                    description: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        // Config tags override source tags entirely
+        let tags = merged["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0]["name"], "animals");
+        assert_eq!(tags[0]["description"], "Animal operations");
+        assert_eq!(tags[1]["name"], "admin");
+    }
+
+    #[test]
+    fn merge_servers_from_sources_when_no_override() {
+        let mut a = petstore_spec();
+        a["servers"] = json!([{"url": "https://a.example.com"}]);
+        let mut b = users_spec();
+        b["servers"] = json!([
+            {"url": "https://a.example.com"},
+            {"url": "https://b.example.com"}
+        ]);
+
+        let specs = vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)];
+        let config = MergeConfig::default();
+        let merged = merge_specs(specs, &config).unwrap();
+
+        let servers = merged["servers"].as_array().unwrap();
+        // Deduplicated by url
+        assert_eq!(servers.len(), 2);
     }
 }

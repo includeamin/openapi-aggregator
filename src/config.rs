@@ -103,6 +103,13 @@ pub struct MergeConfig {
     pub tag_separator: String,
     /// Override the `info` block in the merged output.
     pub info: Option<InfoOverride>,
+    /// Explicit list of servers for the merged spec.
+    /// If set, replaces any servers collected from sources.
+    pub servers: Option<Vec<ServerEntry>>,
+    /// Explicit list of tags for the merged spec.
+    /// If set, replaces any tags collected from sources.
+    /// (Operation-level tag references are NOT rewritten; these should match.)
+    pub tags: Option<Vec<TagEntry>>,
 }
 
 impl Default for MergeConfig {
@@ -113,6 +120,8 @@ impl Default for MergeConfig {
             tag_prefix: TagPrefixStrategy::default(),
             tag_separator: default_tag_separator(),
             info: None,
+            servers: None,
+            tags: None,
         }
     }
 }
@@ -150,5 +159,19 @@ pub enum ConflictStrategy {
 pub struct InfoOverride {
     pub title: Option<String>,
     pub version: Option<String>,
+    pub description: Option<String>,
+}
+
+/// A server entry for the merged spec.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ServerEntry {
+    pub url: String,
+    pub description: Option<String>,
+}
+
+/// A tag entry for the merged spec.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TagEntry {
+    pub name: String,
     pub description: Option<String>,
 }
