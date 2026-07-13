@@ -1,6 +1,6 @@
 [package]
 name = "openapi-aggregator"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 description = "Aggregate and merge OpenAPI specifications from multiple sources"
 license = "MIT"
