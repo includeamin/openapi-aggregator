@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-07-13
+
+### Miscellaneous
+
+- Update deps and fix install script
+
 ## [0.5.0] - 2026-05-05
 
 ### Features
