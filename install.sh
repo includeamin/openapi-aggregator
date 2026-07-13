@@ -67,8 +67,22 @@ resolve_version() {
     TAG="$VERSION"
   else
     need curl
-    TAG=$(curl -sSfL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+
+    # Prefer GitHub API, but include a User-Agent to avoid 403 responses.
+    TAG=$(curl -sSfL \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: ${BINARY}-install-script" \
+      "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
+
+    # Fallback for environments where GitHub API is blocked or rate-limited.
+    if [ -z "$TAG" ]; then
+      info "GitHub API unavailable; resolving latest release via redirect..."
+      TAG=$(curl -sSLI -o /dev/null -w '%{url_effective}' \
+        "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+        | sed -n 's|.*/releases/tag/\([^/?#]*\).*|\1|p' | head -1 || true)
+    fi
+
     [ -n "$TAG" ] || error "could not determine latest release"
   fi
   info "installing version: $TAG"
