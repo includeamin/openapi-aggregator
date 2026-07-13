@@ -19,6 +19,38 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$1"; }
 error() { printf '\033[1;31m[error]\033[0m %s\n' "$1" >&2; exit 1; }
 
+print_path_fix_hint() {
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh)
+      rc_file="$HOME/.zshrc"
+      ;;
+    bash)
+      rc_file="$HOME/.bashrc"
+      ;;
+    fish)
+      rc_file="$HOME/.config/fish/config.fish"
+      ;;
+    *)
+      rc_file="$HOME/.profile"
+      ;;
+  esac
+
+  info "${BINARY} is installed but not on PATH in this shell session."
+  printf '%s\n' ""
+  printf '%s\n' "Run this now:"
+
+  if [ "$shell_name" = "fish" ]; then
+    printf '  %s\n' "set -Ux fish_user_paths ${INSTALL_DIR} \$fish_user_paths"
+    printf '  %s\n' "exec fish"
+  else
+    printf '  %s\n' "echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${rc_file}"
+    printf '  %s\n' ". ${rc_file}"
+  fi
+
+  printf '%s\n' ""
+}
+
 need() {
   command -v "$1" >/dev/null 2>&1 || error "required command not found: $1"
 }
@@ -125,7 +157,7 @@ download_and_install() {
   # Remind user to add to PATH if needed
   case ":$PATH:" in
     *":${INSTALL_DIR}:"*) ;;
-    *) info "add ${INSTALL_DIR} to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+    *) print_path_fix_hint ;;
   esac
 }
 
