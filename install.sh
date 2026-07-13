@@ -7,12 +7,16 @@
 # Options (via environment variables):
 #   VERSION     - specific version to install (e.g. v0.1.0). Defaults to latest.
 #   INSTALL_DIR - directory to install to. Defaults to ~/.local/bin.
+#   OPENAPI_AGGREGATOR_HOME - if set (and INSTALL_DIR is unset), installs to
+#                 $OPENAPI_AGGREGATOR_HOME/bin.
 
 set -e
 
 REPO="includeamin/openapi-aggregator"
 BINARY="openapi-aggregator"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-}"
+APP_HOME="${OPENAPI_AGGREGATOR_HOME:-}"
+DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -20,7 +24,14 @@ info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$1"; }
 error() { printf '\033[1;31m[error]\033[0m %s\n' "$1" >&2; exit 1; }
 
 print_path_fix_hint() {
-  shell_name="$(basename "${SHELL:-}")"
+  shell_path="${SHELL:-}"
+  case "$shell_path" in
+    */*) shell_name="${shell_path##*/}" ;;
+    *)   shell_name="$shell_path" ;;
+  esac
+
+  [ -n "$shell_name" ] || shell_name="unknown"
+
   case "$shell_name" in
     zsh)
       rc_file="$HOME/.zshrc"
@@ -53,6 +64,18 @@ print_path_fix_hint() {
 
 need() {
   command -v "$1" >/dev/null 2>&1 || error "required command not found: $1"
+}
+
+resolve_install_dir() {
+  if [ -n "$INSTALL_DIR" ]; then
+    return
+  fi
+
+  if [ -n "$APP_HOME" ]; then
+    INSTALL_DIR="${APP_HOME}/bin"
+  else
+    INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+  fi
 }
 
 # --- detect OS & arch ------------------------------------------------------
@@ -164,12 +187,21 @@ download_and_install() {
 # --- uninstall -------------------------------------------------------------
 
 uninstall() {
-  if [ ! -f "${INSTALL_DIR}/${BINARY}" ]; then
-    error "${BINARY} not found in ${INSTALL_DIR}"
+  if [ -n "$INSTALL_DIR" ]; then
+    target_path="${INSTALL_DIR}/${BINARY}"
+  elif [ -n "$APP_HOME" ]; then
+    target_path="${APP_HOME}/bin/${BINARY}"
+  else
+    target_path="$(command -v "$BINARY" 2>/dev/null || true)"
+    [ -n "$target_path" ] || target_path="${DEFAULT_INSTALL_DIR}/${BINARY}"
   fi
 
-  info "removing ${INSTALL_DIR}/${BINARY}"
-  rm -f "${INSTALL_DIR}/${BINARY}"
+  if [ ! -f "$target_path" ]; then
+    error "${BINARY} not found (set INSTALL_DIR to uninstall from a custom location)"
+  fi
+
+  info "removing ${target_path}"
+  rm -f "$target_path"
 
   info "${BINARY} has been uninstalled"
 }
@@ -181,6 +213,7 @@ case "${1:-}" in
     uninstall
     ;;
   *)
+    resolve_install_dir
     detect_target
     resolve_version
     download_and_install
