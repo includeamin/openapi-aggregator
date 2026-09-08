@@ -36,7 +36,7 @@ pub fn merge_specs(
     }
 
     // --- info ---
-    let info = build_info(&specs, config.info.as_ref());
+    let info = build_info(&specs, config.info.as_ref())?;
     merged.insert("info".into(), info);
 
     // --- paths & components (incremental merge) ---
@@ -56,7 +56,7 @@ pub fn merge_specs(
         }
 
         // Phase 2b: rewrite tag references in operations before merging paths
-        if config.tag_prefix == TagPrefixStrategy::SourceName {
+        if config.tag_prefix == TagPrefixStrategy::SourceName && config.tags.is_none() {
             rewrite_spec_operation_tags(&mut spec, &tag_prefix, config);
         }
 
@@ -191,7 +191,10 @@ pub fn merge_specs(
 // helpers
 // ---------------------------------------------------------------------------
 
-fn build_info(specs: &[(String, String, Value)], info_override: Option<&InfoOverride>) -> Value {
+fn build_info(
+    specs: &[(String, String, Value)],
+    info_override: Option<&InfoOverride>,
+) -> Result<Value, Error> {
     let mut info = specs[0]
         .2
         .get("info")
@@ -199,7 +202,10 @@ fn build_info(specs: &[(String, String, Value)], info_override: Option<&InfoOver
         .unwrap_or_else(|| Value::Object(Map::new()));
 
     if let Some(ov) = info_override {
-        let obj = info.as_object_mut().expect("info must be object");
+        let obj = info.as_object_mut().ok_or_else(|| Error::InvalidSpec {
+            name: "merged".into(),
+            reason: "'info' must be an object".into(),
+        })?;
         if let Some(title) = &ov.title {
             obj.insert("title".into(), Value::String(title.clone()));
         }
@@ -211,7 +217,7 @@ fn build_info(specs: &[(String, String, Value)], info_override: Option<&InfoOver
         }
     }
 
-    info
+    Ok(info)
 }
 
 fn is_reserved_top_level_key(key: &str) -> bool {
@@ -356,8 +362,13 @@ fn merge_paths(
                     merged.insert(key, operations.clone());
                 }
                 ConflictStrategy::Rename => {
-                    let prefixed = format!("/{source_name}{path}");
-                    merged.insert(prefixed, operations.clone());
+                    let mut renamed_path = format!("/{source_name}{path}");
+                    let mut suffix = 2;
+                    while merged.contains_key(&renamed_path) {
+                        renamed_path = format!("/{source_name}_{suffix}{path}");
+                        suffix += 1;
+                    }
+                    merged.insert(renamed_path, operations.clone());
                 }
             }
         } else {
@@ -536,6 +547,28 @@ mod tests {
     }
 
     #[test]
+    fn merge_conflict_rename_does_not_overwrite_path() {
+        let mut first = petstore_spec();
+        first["paths"]["/b/pets"] = json!({"get": {"summary": "Existing"}});
+
+        let specs = vec![
+            ("a".into(), "a".into(), first),
+            ("b".into(), "b".into(), petstore_spec()),
+        ];
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        };
+        let merged = merge_specs(specs, &config).unwrap();
+
+        assert_eq!(merged["paths"]["/b/pets"]["get"]["summary"], "Existing");
+        assert_eq!(
+            merged["paths"]["/b_2/pets"]["get"]["summary"],
+            "List pets"
+        );
+    }
+
+    #[test]
     fn merge_with_prefix_paths() {
         let specs = vec![
             ("petstore".into(), "petstore".into(), petstore_spec()),
@@ -564,6 +597,28 @@ mod tests {
         let merged = merge_specs(specs, &config).unwrap();
         assert_eq!(merged["info"]["title"], "Custom Title");
         assert_eq!(merged["info"]["version"], "2.0");
+    }
+
+    #[test]
+    fn merge_rejects_non_object_info_with_override() {
+        let specs = vec![
+            (
+                "a".into(),
+                "a".into(),
+                json!({"openapi": "3.0.3", "info": "invalid", "paths": {}}),
+            ),
+        ];
+        let config = MergeConfig {
+            info: Some(InfoOverride {
+                title: Some("Custom Title".into()),
+                version: None,
+                description: None,
+            }),
+            ..Default::default()
+        };
+
+        let error = merge_specs(specs, &config).unwrap_err();
+        assert!(error.to_string().contains("'info' must be an object"));
     }
 
     #[test]
@@ -754,6 +809,27 @@ mod tests {
         assert_eq!(tags[0]["name"], "animals");
         assert_eq!(tags[0]["description"], "Animal operations");
         assert_eq!(tags[1]["name"], "admin");
+    }
+
+    #[test]
+    fn explicit_tags_are_not_prefixed_in_operations() {
+        let mut source = petstore_spec();
+        source["tags"] = json!([{"name": "pets"}]);
+        source["paths"]["/pets"]["get"]["tags"] = json!(["pets"]);
+
+        let config = MergeConfig {
+            tag_prefix: TagPrefixStrategy::SourceName,
+            tags: Some(vec![crate::config::TagEntry {
+                name: "pets".into(),
+                description: None,
+            }]),
+            ..Default::default()
+        };
+        let merged = merge_specs(vec![("source".into(), "source".into(), source)], &config)
+            .unwrap();
+
+        assert_eq!(merged["tags"][0]["name"], "pets");
+        assert_eq!(merged["paths"]["/pets"]["get"]["tags"][0], "pets");
     }
 
     #[test]

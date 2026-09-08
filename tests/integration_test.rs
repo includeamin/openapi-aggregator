@@ -271,3 +271,33 @@ async fn http_source_with_headers() {
     assert_eq!(spec["info"]["title"], "Remote API");
     assert!(spec["paths"]["/items"].is_object());
 }
+
+#[tokio::test]
+async fn http_source_rejects_non_success_status() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/missing.json")
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "openapi": "3.0.3",
+                "info": {"title": "Not Found", "version": "1.0"},
+                "paths": {}
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let source = Source::Http {
+        name: Some("missing".into()),
+        url: format!("{}/missing.json", server.url()),
+        headers: Default::default(),
+        tag_prefix: None,
+        additional_blocks: None,
+    };
+
+    let error = load_source(&source).await.unwrap_err();
+    assert!(error.to_string().contains("HTTP request failed"));
+}

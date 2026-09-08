@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::config::Source;
 use crate::error::Error;
@@ -16,12 +17,21 @@ pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
             Ok((source.display_name(), value))
         }
         Source::Http { url, headers, .. } => {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|e| Error::HttpRequest {
+                    url: url.clone(),
+                    source: e,
+                })?;
             let mut request = client.get(url);
             for (key, value) in headers {
                 request = request.header(key, value);
             }
             let response = request.send().await.map_err(|e| Error::HttpRequest {
+                url: url.clone(),
+                source: e,
+            })?.error_for_status().map_err(|e| Error::HttpRequest {
                 url: url.clone(),
                 source: e,
             })?;
