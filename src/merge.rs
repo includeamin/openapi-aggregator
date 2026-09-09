@@ -562,10 +562,7 @@ mod tests {
         let merged = merge_specs(specs, &config).unwrap();
 
         assert_eq!(merged["paths"]["/b/pets"]["get"]["summary"], "Existing");
-        assert_eq!(
-            merged["paths"]["/b_2/pets"]["get"]["summary"],
-            "List pets"
-        );
+        assert_eq!(merged["paths"]["/b_2/pets"]["get"]["summary"], "List pets");
     }
 
     #[test]
@@ -601,13 +598,11 @@ mod tests {
 
     #[test]
     fn merge_rejects_non_object_info_with_override() {
-        let specs = vec![
-            (
-                "a".into(),
-                "a".into(),
-                json!({"openapi": "3.0.3", "info": "invalid", "paths": {}}),
-            ),
-        ];
+        let specs = vec![(
+            "a".into(),
+            "a".into(),
+            json!({"openapi": "3.0.3", "info": "invalid", "paths": {}}),
+        )];
         let config = MergeConfig {
             info: Some(InfoOverride {
                 title: Some("Custom Title".into()),
@@ -825,8 +820,8 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let merged = merge_specs(vec![("source".into(), "source".into(), source)], &config)
-            .unwrap();
+        let merged =
+            merge_specs(vec![("source".into(), "source".into(), source)], &config).unwrap();
 
         assert_eq!(merged["tags"][0]["name"], "pets");
         assert_eq!(merged["paths"]["/pets"]["get"]["tags"][0], "pets");

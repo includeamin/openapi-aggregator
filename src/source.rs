@@ -28,13 +28,18 @@ pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
             for (key, value) in headers {
                 request = request.header(key, value);
             }
-            let response = request.send().await.map_err(|e| Error::HttpRequest {
-                url: url.clone(),
-                source: e,
-            })?.error_for_status().map_err(|e| Error::HttpRequest {
-                url: url.clone(),
-                source: e,
-            })?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| Error::HttpRequest {
+                    url: url.clone(),
+                    source: e,
+                })?
+                .error_for_status()
+                .map_err(|e| Error::HttpRequest {
+                    url: url.clone(),
+                    source: e,
+                })?;
             let content = response.text().await.map_err(|e| Error::HttpRequest {
                 url: url.clone(),
                 source: e,
