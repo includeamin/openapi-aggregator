@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-09-09
+
+### Miscellaneous
+
+- *(http)* Improve http request handling
+- *(lint)* Fix formatting
+
 ## [0.6.0] - 2026-07-13
 
 ### Features
