@@ -34,12 +34,12 @@ pub(crate) async fn load_source_with_client(
                 })?
         }
         Source::Http { url, headers, .. } => {
-            let url = expand_env(url)?;
-            let http_err = |e| Error::HttpRequest {
+            // Errors carry the unexpanded URL so `${SECRET}` values never reach logs.
+            let http_err = |e: reqwest::Error| Error::HttpRequest {
                 url: url.clone(),
-                source: e,
+                source: e.without_url(),
             };
-            let mut request = client.get(&url);
+            let mut request = client.get(expand_env(url)?);
             for (key, value) in headers {
                 request = request.header(key, expand_env(value)?);
             }

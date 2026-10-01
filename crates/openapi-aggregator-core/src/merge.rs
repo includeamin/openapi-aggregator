@@ -58,6 +58,14 @@ pub fn merge_specs_with_report(
     }
     let warnings = version_warnings(&specs);
 
+    // Top-level `security` applies to every operation of its own source. Keep it
+    // top-level only when all sources agree; otherwise push it down per source.
+    let first_security = specs[0].2.get("security");
+    let shared_security = specs
+        .iter()
+        .all(|(_, _, spec)| spec.get("security") == first_security);
+    let top_level_security = shared_security.then(|| first_security.cloned()).flatten();
+
     // --- info ---
     let info = build_info(&specs, config.info.as_ref())?;
     merged.insert("info".into(), info);
@@ -69,11 +77,16 @@ pub fn merge_specs_with_report(
     let mut merged_component_extras = Map::new();
     let mut merged_tags: Vec<Value> = Vec::new();
     let mut merged_servers: Vec<Value> = Vec::new();
-    let mut merged_security: Vec<Value> = Vec::new();
     let mut merged_custom_top_level = Map::new();
 
     for (source_name, tag_prefix, mut spec) in specs {
         let ident = sanitize_ident(&source_name);
+
+        if !shared_security {
+            if let Some(requirements) = spec.get("security").cloned() {
+                push_down_security(&mut spec, &requirements);
+            }
+        }
 
         // Phase 1: detect component conflicts and build a $ref rename map
         let rename_map = build_rename_map(&ident, &spec, &merged_components, config);
@@ -81,6 +94,7 @@ pub fn merge_specs_with_report(
         // Phase 2: rewrite $refs in the source spec if needed
         if !rename_map.is_empty() {
             rewrite_refs(&mut spec, &rename_map);
+            rewrite_security_requirements(&mut spec, &rename_map);
         }
 
         // Phase 2b: rewrite tag references in operations before merging paths
@@ -179,16 +193,7 @@ pub fn merge_specs_with_report(
             }
         }
 
-        // Phase 3f: merge top-level security requirements (deduplicate)
-        if let Some(Value::Array(requirements)) = spec.get("security") {
-            for requirement in requirements {
-                if !merged_security.contains(requirement) {
-                    merged_security.push(requirement.clone());
-                }
-            }
-        }
-
-        // Phase 3g: merge non-standard top-level blocks (e.g. vendor extensions)
+        // Phase 3f: merge non-standard top-level blocks (e.g. vendor extensions)
         if let Some(root) = spec.as_object() {
             for (key, value) in root {
                 if is_reserved_top_level_key(key) {
@@ -260,8 +265,8 @@ pub fn merge_specs_with_report(
         merged.insert("servers".into(), Value::Array(merged_servers));
     }
 
-    if !merged_security.is_empty() {
-        merged.insert("security".into(), Value::Array(merged_security));
+    if let Some(security) = top_level_security {
+        merged.insert("security".into(), security);
     }
 
     Ok(MergeReport {
@@ -396,6 +401,74 @@ fn rewrite_spec_operation_tags(spec: &mut Value, tag_prefix: &str, config: &Merg
     }
 }
 
+/// Mutable access to every operation in `paths` and `webhooks`.
+fn for_each_operation(spec: &mut Value, mut f: impl FnMut(&mut Map<String, Value>)) {
+    for section in ["paths", "webhooks"] {
+        let Some(Value::Object(items)) = spec.get_mut(section) else {
+            continue;
+        };
+        for path_item in items.values_mut() {
+            let Some(path_item) = path_item.as_object_mut() else {
+                continue;
+            };
+            for method in HTTP_METHODS {
+                if let Some(Value::Object(operation)) = path_item.get_mut(*method) {
+                    f(operation);
+                }
+            }
+        }
+    }
+}
+
+/// Copy a source's top-level security requirements into each of its operations
+/// that doesn't declare its own, so they keep their meaning after merging.
+fn push_down_security(spec: &mut Value, requirements: &Value) {
+    for_each_operation(spec, |operation| {
+        if !operation.contains_key("security") {
+            operation.insert("security".into(), requirements.clone());
+        }
+    });
+}
+
+/// Security requirements name schemes by key, not `$ref`: rename those keys
+/// for any renamed `securitySchemes` entry.
+fn rewrite_security_requirements(spec: &mut Value, rename_map: &HashMap<String, String>) {
+    const PREFIX: &str = "#/components/securitySchemes/";
+    let renames: HashMap<&str, &str> = rename_map
+        .iter()
+        .filter_map(|(old, new)| Some((old.strip_prefix(PREFIX)?, new.strip_prefix(PREFIX)?)))
+        .collect();
+    if renames.is_empty() {
+        return;
+    }
+
+    let rename_requirements = |security: &mut Value| {
+        let Value::Array(requirements) = security else {
+            return;
+        };
+        for requirement in requirements {
+            if let Value::Object(schemes) = requirement {
+                *schemes = std::mem::take(schemes)
+                    .into_iter()
+                    .map(|(name, scopes)| match renames.get(name.as_str()) {
+                        Some(new) => (new.to_string(), scopes),
+                        None => (name, scopes),
+                    })
+                    .collect();
+            }
+        }
+    };
+
+    if let Some(security) = spec.get_mut("security") {
+        rename_requirements(security);
+    }
+    for_each_operation(spec, |operation| {
+        if let Some(security) = operation.get_mut("security") {
+            rename_requirements(security);
+        }
+    });
+}
+
 fn component_ref(ctype: &str, name: &str) -> String {
     format!("#/components/{ctype}/{name}")
 }
@@ -490,6 +563,20 @@ fn rewrite_refs(value: &mut Value, rename_map: &HashMap<String, String>) {
                 map.insert("$ref".into(), Value::String(new_ref));
             }
 
+            if let Some(Value::Object(mapping)) = map
+                .get_mut("discriminator")
+                .and_then(|d| d.get_mut("mapping"))
+            {
+                for target in mapping.values_mut() {
+                    if let Some(new_target) = target
+                        .as_str()
+                        .and_then(|t| renamed_mapping_target(t, rename_map))
+                    {
+                        *target = Value::String(new_target);
+                    }
+                }
+            }
+
             for v in map.values_mut() {
                 rewrite_refs(v, rename_map);
             }
@@ -501,6 +588,16 @@ fn rewrite_refs(value: &mut Value, rename_map: &HashMap<String, String>) {
         }
         _ => {}
     }
+}
+
+/// A discriminator mapping value is either a `$ref`-style string or a bare
+/// schema name (`Dog`, meaning `#/components/schemas/Dog`).
+fn renamed_mapping_target(target: &str, rename_map: &HashMap<String, String>) -> Option<String> {
+    if target.contains('/') {
+        return renamed_ref(target, rename_map);
+    }
+    let new_ref = rename_map.get(&component_ref("schemas", target))?;
+    new_ref.rsplit('/').next().map(str::to_string)
 }
 
 /// `#/components/schemas/Pet/properties/id` → `#/components/schemas/b_Pet/properties/id`
@@ -1291,11 +1388,11 @@ mod tests {
     }
 
     #[test]
-    fn top_level_security_is_unioned() {
-        let mut a = spec_with(json!({}), json!({}));
+    fn identical_top_level_security_is_kept() {
+        let mut a = spec_with(json!({ "/a": { "get": { "summary": "a" } } }), json!({}));
         a["security"] = json!([{ "bearer": [] }]);
-        let mut b = spec_with(json!({}), json!({}));
-        b["security"] = json!([{ "apiKey": [] }, { "bearer": [] }]);
+        let mut b = spec_with(json!({ "/b": { "get": { "summary": "b" } } }), json!({}));
+        b["security"] = json!([{ "bearer": [] }]);
 
         let merged = merge_specs(
             vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
@@ -1303,10 +1400,114 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            merged["security"],
-            json!([{ "bearer": [] }, { "apiKey": [] }])
+        assert_eq!(merged["security"], json!([{ "bearer": [] }]));
+        assert!(merged["paths"]["/a"]["get"].get("security").is_none());
+    }
+
+    #[test]
+    fn differing_top_level_security_is_pushed_down_to_operations() {
+        let mut a = spec_with(json!({ "/a": { "get": { "summary": "a" } } }), json!({}));
+        a["security"] = json!([{ "oauth": ["read"] }]);
+        let mut b = spec_with(
+            json!({
+                "/b": { "get": { "summary": "b" } },
+                "/public": { "get": { "summary": "p", "security": [] } }
+            }),
+            json!({}),
         );
+        b["security"] = json!([{ "apiKey": [] }]);
+        let c = spec_with(json!({ "/c": { "get": { "summary": "c" } } }), json!({}));
+
+        let merged = merge_specs(
+            vec![
+                ("a".into(), "a".into(), a),
+                ("b".into(), "b".into(), b),
+                ("c".into(), "c".into(), c),
+            ],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+
+        assert!(merged.get("security").is_none(), "{merged:#}");
+        let paths = &merged["paths"];
+        assert_eq!(
+            paths["/a"]["get"]["security"],
+            json!([{ "oauth": ["read"] }])
+        );
+        assert_eq!(paths["/b"]["get"]["security"], json!([{ "apiKey": [] }]));
+        assert_eq!(paths["/public"]["get"]["security"], json!([]));
+        assert!(paths["/c"]["get"].get("security").is_none());
+    }
+
+    #[test]
+    fn renamed_security_scheme_updates_requirements() {
+        let a = spec_with(
+            json!({}),
+            json!({ "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } } }),
+        );
+        let mut b = spec_with(
+            json!({ "/b": { "get": { "summary": "b", "security": [{ "bearer": [] }] } } }),
+            json!({ "securitySchemes": {
+                "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+            }}),
+        );
+        b["security"] = json!([{ "bearer": [] }]);
+        b["paths"]["/b2"] = json!({ "get": { "summary": "b2" } });
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        };
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &config,
+        )
+        .unwrap();
+
+        assert!(merged["components"]["securitySchemes"]["b_bearer"].is_object());
+        assert_eq!(
+            merged["paths"]["/b"]["get"]["security"],
+            json!([{ "b_bearer": [] }])
+        );
+        assert_eq!(
+            merged["paths"]["/b2"]["get"]["security"],
+            json!([{ "b_bearer": [] }])
+        );
+    }
+
+    #[test]
+    fn renamed_schema_updates_discriminator_mapping() {
+        let a = spec_with(
+            json!({}),
+            json!({ "schemas": { "Dog": { "type": "object" } } }),
+        );
+        let b = spec_with(
+            json!({}),
+            json!({ "schemas": {
+                "Dog": { "type": "object", "properties": { "bark": { "type": "string" } } },
+                "Pet": {
+                    "oneOf": [{ "$ref": "#/components/schemas/Dog" }],
+                    "discriminator": {
+                        "propertyName": "kind",
+                        "mapping": { "dog": "#/components/schemas/Dog", "doggo": "Dog" }
+                    }
+                }
+            }}),
+        );
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        };
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &config,
+        )
+        .unwrap();
+
+        let mapping = &merged["components"]["schemas"]["Pet"]["discriminator"]["mapping"];
+        assert_eq!(mapping["dog"], "#/components/schemas/b_Dog");
+        assert_eq!(mapping["doggo"], "b_Dog");
     }
 
     #[test]

@@ -196,7 +196,7 @@ When using `rename`, any `$ref` pointing to a renamed component is rewritten aut
 Other top-level fields:
 
 - `webhooks` (OpenAPI 3.1) are merged like paths.
-- Top-level `security` requirements are combined and de-duplicated.
+- Top-level `security` stays top-level only when every source declares the same requirements. Otherwise each source's requirements are copied onto its own operations, so no operation gains or loses authentication. Renamed security schemes and `discriminator.mapping` entries are updated along with `$ref`s.
 - The merged `openapi` version comes from the first source. The CLI prints a warning when sources use different `major.minor` versions (also available via `aggregate_with_report`).
 - Component types are always emitted in the same order, so the output is stable across runs.
 

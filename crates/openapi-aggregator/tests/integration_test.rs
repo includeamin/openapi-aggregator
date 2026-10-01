@@ -410,3 +410,34 @@ fn cli_format_flag_overrides_config() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).starts_with("openapi:"));
 }
+
+#[tokio::test]
+async fn http_errors_do_not_leak_expanded_env_secrets() {
+    std::env::set_var("OPENAPI_AGGREGATOR_TEST_SECRET", "s3cr3t-value");
+
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", mockito::Matcher::Any)
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let source = Source::Http {
+        name: Some("secret".into()),
+        url: format!(
+            "{}/spec?token=${{OPENAPI_AGGREGATOR_TEST_SECRET}}",
+            server.url()
+        ),
+        headers: Default::default(),
+        tag_prefix: None,
+        additional_blocks: None,
+    };
+
+    let err = load_source(&source).await.unwrap_err();
+    let message = format!("{err} {:?}", std::error::Error::source(&err));
+    assert!(!message.contains("s3cr3t-value"), "{message}");
+    assert!(
+        message.contains("${OPENAPI_AGGREGATOR_TEST_SECRET}"),
+        "{message}"
+    );
+}
