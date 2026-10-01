@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fileNameFromUrl, upsertFile, workspaceKey } from '../src/workspace';
+import { fileNameFromUrl, isNameTaken, uniqueFileName, upsertFile, workspaceKey } from '../src/workspace';
 
 describe('workspaceKey', () => {
   it('strips leading ./ segments', () => {
@@ -31,5 +31,29 @@ describe('fileNameFromUrl', () => {
   it('falls back for bare hosts and invalid urls', () => {
     expect(fileNameFromUrl('https://x.test/')).toBe('imported.yaml');
     expect(fileNameFromUrl('not a url')).toBe('imported.yaml');
+  });
+});
+
+describe('uniqueFileName', () => {
+  it('keeps a free name and suffixes a taken one before the extension', () => {
+    const files = [
+      { name: 'specs/new.yaml', content: '' },
+      { name: 'specs/new-2.yaml', content: '' },
+    ];
+    expect(uniqueFileName(files, 'specs/other.yaml')).toBe('specs/other.yaml');
+    expect(uniqueFileName(files, './specs/new.yaml')).toBe('specs/new-3.yaml');
+    expect(uniqueFileName([{ name: 'README', content: '' }], 'README')).toBe('README-2');
+  });
+});
+
+describe('isNameTaken', () => {
+  it('detects another file with the same key, ignoring the file being renamed', () => {
+    const files = [
+      { name: 'specs/a.yaml', content: '' },
+      { name: 'specs/b.yaml', content: '' },
+    ];
+    expect(isNameTaken(files, 1, './specs/a.yaml')).toBe(true);
+    expect(isNameTaken(files, 0, 'specs/a.yaml')).toBe(false);
+    expect(isNameTaken(files, 1, 'specs/c.yaml')).toBe(false);
   });
 });

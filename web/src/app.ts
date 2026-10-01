@@ -1,13 +1,13 @@
 import { aggregate, parseConfig } from './engine';
 import { DEFAULT_EXAMPLE_ID, EXAMPLES, findExample, type Example } from './examples';
 import { latestOnly, runPipeline, type PipelineResult } from './pipeline';
-import { errorMessage, fetchText, memoizeLoader } from './resolve';
+import { errorMessage, fetchText, guardLoader, memoizeLoader } from './resolve';
 import { loadSettings, saveSettings } from './settings';
 import { decodeShare, encodeShare, MAX_SHARE_LENGTH, shareParam } from './share';
 import type { Problem, WorkspaceFile } from './types';
 import { createYamlEditor } from './ui/editor';
 import { showReference } from './ui/reference';
-import { fileNameFromUrl, upsertFile } from './workspace';
+import { fileNameFromUrl, isNameTaken, uniqueFileName, upsertFile } from './workspace';
 
 const NEW_FILE = `openapi: 3.0.3
 info:
@@ -38,7 +38,13 @@ export async function startApp(): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const newLoader = () => memoizeLoader((url, headers) => fetchText(url, headers, settings));
+  // Configs from share links may not fetch remote URLs until the user allows it.
+  let remoteAllowed = true;
+  const newLoader = () =>
+    guardLoader(
+      memoizeLoader((url, headers) => fetchText(url, headers, settings)),
+      () => remoteAllowed,
+    );
   let load = newLoader();
   const pipeline = latestOnly(() => runPipeline(state.config, state.files, { parseConfig, aggregate, load }));
 
@@ -73,6 +79,7 @@ export async function startApp(): Promise<void> {
     result = next;
     $('#output').textContent = result.text ?? 'No output. See the Problems tab.';
     renderProblems(result.problems);
+    renderConsent();
     const configError = result.problems.find((p) => p.kind === 'config');
     configEditor.showError(configError?.line, configError?.message);
     if (activeTab === 'reference' && result.text) void showReference($('#reference'), result.text);
@@ -90,6 +97,27 @@ export async function startApp(): Promise<void> {
     );
   }
 
+  function renderConsent(): void {
+    const blocked = !remoteAllowed && result.problems.some((p) => p.kind === 'blocked');
+    $('#consent').hidden = !blocked;
+    if (!blocked) return;
+    let hosts: string[] = [];
+    try {
+      hosts = parseConfig(state.config).sources.flatMap((s) => {
+        try {
+          return s.url ? [new URL(s.url).host] : [];
+        } catch {
+          return [s.url ?? ''];
+        }
+      });
+    } catch {
+      // config error: nothing to list
+    }
+    $('#consent-text').textContent =
+      `This shared config fetches from ${[...new Set(hosts)].join(', ')}. ` +
+      'Your saved variables would be sent there. Review the config first.';
+  }
+
   function renderFiles(): void {
     $('#files').replaceChildren(
       ...state.files.map((file, index) => {
@@ -99,7 +127,9 @@ export async function startApp(): Promise<void> {
         name.className = 'file-name';
         const rename = button('Rename', () => {
           const next = prompt('File name (as referenced by `path:` in the config)', file.name)?.trim();
-          if (next) {
+          if (next && isNameTaken(state.files, index, next)) {
+            notice(`A file named '${next}' already exists.`);
+          } else if (next) {
             file.name = next;
             renderFiles();
             schedule();
@@ -137,6 +167,7 @@ export async function startApp(): Promise<void> {
   }
 
   function loadExample(example: Example): void {
+    remoteAllowed = true;
     $<HTMLSelectElement>('#examples').value = example.id;
     loadWorkspace(example.config, example.files);
   }
@@ -152,7 +183,7 @@ export async function startApp(): Promise<void> {
   // --- workspace actions ---
   $('#add-file').onclick = () => {
     const name = prompt('File name', 'specs/new.yaml')?.trim();
-    if (name) addFile({ name, content: NEW_FILE });
+    if (name) addFile({ name: uniqueFileName(state.files, name), content: NEW_FILE });
   };
   $<HTMLInputElement>('#upload').onchange = async (event) => {
     const input = event.target as HTMLInputElement;
@@ -230,6 +261,11 @@ export async function startApp(): Promise<void> {
       if (activeTab === 'reference' && result.text) void showReference($('#reference'), result.text);
     };
   }
+  $('#allow-fetch').onclick = () => {
+    remoteAllowed = true;
+    $('#consent').hidden = true;
+    void run();
+  };
   $('#copy-config').onclick = async () => {
     await navigator.clipboard.writeText(state.config);
     notice('Config copied. Run it with: openapi-aggregator -c openapi-aggregator.yaml');
@@ -264,6 +300,7 @@ export async function startApp(): Promise<void> {
   if (shared) {
     try {
       const payload = await decodeShare(shared);
+      remoteAllowed = false;
       select.value = '';
       loadWorkspace(payload.config, payload.files);
       return;

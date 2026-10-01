@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchText, memoizeLoader, resolveSources, substituteVars } from '../src/resolve';
+import { fetchText, guardLoader, memoizeLoader, resolveSources, substituteVars } from '../src/resolve';
 import type { Settings, SourceSummary } from '../src/types';
 
 const settings = (over: Partial<Settings> = {}): Settings => ({ proxy: '', variables: {}, ...over });
@@ -88,5 +88,34 @@ describe('resolveSources', () => {
       ['r', 'http'],
     ]);
     expect(result.problems[0].message).toContain("No workspace file named 'missing.yaml'");
+  });
+});
+
+describe('fetchText error messages', () => {
+  it('show the URL template, never substituted variable values', async () => {
+    const vars = settings({ variables: { T: 'top-secret' } });
+    const network = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    const notFound = async () => new Response('', { status: 404 });
+    for (const fetchFn of [network, notFound]) {
+      const error = (await fetchText('https://api.test/spec?t=${T}', {}, vars, fetchFn).catch((e: unknown) => e)) as Error;
+      expect(error.message).not.toContain('top-secret');
+      expect(error.message).toContain('${T}');
+    }
+  });
+});
+
+describe('guardLoader', () => {
+  it('blocks remote loads until allowed, without calling the inner loader', async () => {
+    let allowed = false;
+    const inner = vi.fn(async () => 'spec');
+    const load = guardLoader(inner, () => allowed);
+
+    await expect(load('https://x.test/a', {})).rejects.toMatchObject({ kind: 'blocked' });
+    expect(inner).not.toHaveBeenCalled();
+
+    allowed = true;
+    expect(await load('https://x.test/a', {})).toBe('spec');
   });
 });

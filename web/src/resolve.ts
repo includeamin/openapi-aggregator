@@ -36,20 +36,36 @@ export async function fetchText(
   const finalHeaders = Object.fromEntries(
     Object.entries(headers).map(([key, value]) => [key, substituteVars(value, settings.variables)]),
   );
+  // Messages use the URL template (`url`), so variable values never appear on screen.
   let response: Response;
   try {
     response = await fetchFn(settings.proxy + target, { headers: finalHeaders });
   } catch {
     throw new SourceError(
       'cors',
-      `Could not fetch ${target}. The server is unreachable or does not allow cross-origin requests (CORS). ` +
+      `Could not fetch ${url}. The server is unreachable or does not allow cross-origin requests (CORS). ` +
         'Paste or upload the spec instead, or set a CORS proxy under Settings.',
     );
   }
   if (!response.ok) {
-    throw new SourceError('http', `${target} returned HTTP ${response.status}.`);
+    throw new SourceError('http', `${url} returned HTTP ${response.status}.`);
   }
   return response.text();
+}
+
+/**
+ * Refuse remote loads until `isAllowed()` returns true. Used for configs opened from a
+ * share link, so a stranger's config can't send this browser's variables to their server.
+ */
+export function guardLoader(load: Loader, isAllowed: () => boolean): Loader {
+  return (url, headers) => {
+    if (!isAllowed()) {
+      return Promise.reject(
+        new SourceError('blocked', `Not fetched: ${url}. This config came from a share link; review it, then click "Allow fetching".`),
+      );
+    }
+    return load(url, headers);
+  };
 }
 
 /** Cache successful loads per (url, headers); failed loads are retried next time. */

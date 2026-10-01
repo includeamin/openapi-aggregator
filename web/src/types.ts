@@ -26,7 +26,7 @@ export interface AggregateOutput {
   warnings: string[];
 }
 
-export type ProblemKind = 'config' | 'missing-file' | 'variable' | 'cors' | 'http' | 'merge';
+export type ProblemKind = 'config' | 'missing-file' | 'variable' | 'cors' | 'http' | 'merge' | 'blocked';
 
 export interface Problem {
   level: 'error' | 'warning';
