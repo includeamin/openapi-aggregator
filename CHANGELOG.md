@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-10-01
+
+### Bug Fixes
+
+- Merge correctness, strict config and CLI output format
+- *(merge)* Keep per-source security semantics and rewrite scheme and discriminator renames
+- *(web)* Gate remote fetches from shared configs and harden workspace edits
+
+### CI
+
+- *(release)* Commit Cargo.lock and pass release notes via env
+- Build, test and deploy the web playground to GitHub Pages
+
+### Features
+
+- *(wasm)* Add wasm-bindgen wrapper crate
+- *(web)* Scaffold playground with wasm engine wrapper
+- *(web)* Resolve workspace and URL sources with CORS-aware errors
+- *(web)* Compressed share links in the URL hash
+- *(web)* Add playground examples
+- *(web)* Merge pipeline that turns failures into problems
+- *(web)* Playground UI with editors, examples, share links and API reference
+
+### Miscellaneous
+
+- Sync Cargo.lock crate versions to 0.6.1
+
+### Refactor
+
+- Move crate into a cargo workspace
+- Extract pure openapi-aggregator-core crate
+
 ## [0.6.1] - 2026-09-09
 
 ### Miscellaneous
