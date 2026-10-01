@@ -4,7 +4,8 @@ import { latestOnly, runPipeline, type PipelineResult } from './pipeline';
 import { errorMessage, fetchText, guardLoader, memoizeLoader } from './resolve';
 import { loadSettings, saveSettings } from './settings';
 import { decodeShare, encodeShare, MAX_SHARE_LENGTH, shareParam } from './share';
-import type { Problem, WorkspaceFile } from './types';
+import { fileHues, problemCountLabel, sourceChips, statusOf } from './sources';
+import type { Problem, SourceSummary, WorkspaceFile } from './types';
 import { createYamlEditor } from './ui/editor';
 import { showReference } from './ui/reference';
 import { fileNameFromUrl, isNameTaken, uniqueFileName, upsertFile } from './workspace';
@@ -22,19 +23,49 @@ function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   return el;
 }
 
-function button(label: string, onClick: () => void): HTMLButtonElement {
+const ICONS = {
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4Z" />',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" />',
+  x: '<path d="M6 6l12 12M18 6 6 18" />',
+  alert: '<path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 5v5m0 3v.5" />',
+} as const;
+
+/** An SVG icon from the constant set above (never user content). */
+function icon(name: keyof typeof ICONS): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.classList.add('icon');
+  svg.innerHTML = ICONS[name];
+  return svg;
+}
+
+function iconButton(name: keyof typeof ICONS, label: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement('button');
   b.type = 'button';
-  b.textContent = label;
+  b.className = 'icon-btn';
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  b.append(icon(name));
   b.onclick = onClick;
   return b;
 }
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+const INTRO_KEY = 'openapi-aggregator.intro-dismissed';
 
 export async function startApp(): Promise<void> {
   const settings = loadSettings();
   const state = { config: '', files: [] as WorkspaceFile[], selected: 0 };
   let result: PipelineResult = { text: null, format: 'yaml', problems: [] };
   let activeTab = 'merged';
+  let activeEditor: 'config' | 'file' = 'config';
   let timer: ReturnType<typeof setTimeout> | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -73,28 +104,61 @@ export async function startApp(): Promise<void> {
     timer = setTimeout(run, 300);
   }
 
+  function currentSources(): SourceSummary[] {
+    try {
+      return parseConfig(state.config).sources;
+    } catch {
+      return [];
+    }
+  }
+
   async function run(): Promise<void> {
+    const status = $('#status');
+    status.dataset.state = 'busy';
+    $('#status-label').textContent = 'Merging';
     const next = await pipeline();
     if (!next) return; // superseded by a newer run
     result = next;
-    $('#output').textContent = result.text ?? 'No output. See the Problems tab.';
+    $('#output').textContent = result.text ?? 'No merged spec yet. Open the Problems tab to see what needs fixing.';
     renderProblems(result.problems);
     renderConsent();
+    renderStatus();
+    renderFiles();
     const configError = result.problems.find((p) => p.kind === 'config');
     configEditor.showError(configError?.line, configError?.message);
     if (activeTab === 'reference' && result.text) void showReference($('#reference'), result.text);
   }
 
   function renderProblems(problems: Problem[]): void {
-    $('#problem-count').textContent = problems.length ? `(${problems.length})` : '';
+    $('#problem-count').textContent = problems.length ? String(problems.length) : '';
+    if (!problems.length) {
+      $('#problems').replaceChildren(el('li', 'empty', 'No problems. Every source loaded and merged cleanly.'));
+      return;
+    }
     $('#problems').replaceChildren(
       ...problems.map((p) => {
-        const li = document.createElement('li');
-        li.className = p.level;
-        li.textContent = (p.source ? `[${p.source}] ` : '') + p.message;
+        const li = el('li', `problem ${p.level}`);
+        li.append(icon('alert'), el('span', 'problem-source', p.source ?? (p.kind === 'config' ? 'config' : 'merge')));
+        li.append(el('span', 'problem-message', p.message));
         return li;
       }),
     );
+  }
+
+  function renderStatus(): void {
+    const { state: runState, label } = statusOf(result);
+    $('#status').dataset.state = runState;
+    $('#status-label').textContent = label;
+    $('#status-sources').replaceChildren(
+      ...sourceChips(currentSources()).map((chip) => {
+        const span = el('span', `chip hue-${chip.hue}`);
+        span.title = chip.kind === 'url' ? 'Fetched from a URL' : 'Workspace file';
+        span.append(el('span', 'dot'), chip.name);
+        return span;
+      }),
+    );
+    $('#status-problems').textContent = problemCountLabel(result.problems.length);
+    $('#status-format').textContent = result.format.toUpperCase();
   }
 
   function renderConsent(): void {
@@ -119,13 +183,18 @@ export async function startApp(): Promise<void> {
   }
 
   function renderFiles(): void {
+    const hues = fileHues(currentSources(), state.files);
     $('#files').replaceChildren(
       ...state.files.map((file, index) => {
-        const li = document.createElement('li');
-        if (index === state.selected) li.className = 'selected';
-        const name = button(file.name, () => selectFile(index));
-        name.className = 'file-name';
-        const rename = button('Rename', () => {
+        const li = el('li', index === state.selected && activeEditor === 'file' ? 'file selected' : 'file');
+        const open = el('button', 'file-open');
+        open.type = 'button';
+        const hue = hues[index];
+        const dot = el('span', hue === null ? 'dot' : `dot hue-${hue}`);
+        dot.title = hue === null ? 'Not used by the config' : 'Used by the config';
+        open.append(dot, el('span', '', file.name));
+        open.onclick = () => selectFile(index, true);
+        const rename = iconButton('pencil', `Rename ${file.name}`, () => {
           const next = prompt('File name (as referenced by `path:` in the config)', file.name)?.trim();
           if (next && isNameTaken(state.files, index, next)) {
             notice(`A file named '${next}' already exists.`);
@@ -135,26 +204,45 @@ export async function startApp(): Promise<void> {
             schedule();
           }
         });
-        const remove = button('Delete', () => {
+        const remove = iconButton('trash', `Delete ${file.name}`, () => {
           state.files.splice(index, 1);
-          selectFile(Math.min(state.selected, state.files.length - 1));
+          selectFile(Math.min(state.selected, state.files.length - 1), activeEditor === 'file' && state.files.length > 0);
           schedule();
         });
-        li.append(name, rename, remove);
+        const actions = el('span', 'file-actions');
+        actions.append(rename, remove);
+        li.append(open, actions);
         return li;
       }),
     );
-    $('#file-editor').hidden = state.files.length === 0;
+    $('#files-empty').hidden = state.files.length > 0;
+    const fileTab = $('#file-tab');
+    fileTab.hidden = state.files.length === 0;
+    fileTab.textContent = state.files[state.selected]?.name ?? '';
+    if (!state.files.length && activeEditor === 'file') showEditor('config');
   }
 
-  function selectFile(index: number): void {
-    state.selected = Math.max(0, index);
-    fileEditor.setDoc(state.files[state.selected]?.content ?? '');
+  function showEditor(which: 'config' | 'file'): void {
+    activeEditor = which;
+    for (const tab of document.querySelectorAll<HTMLElement>('.editor-tabs [role=tab]')) {
+      tab.setAttribute('aria-selected', String(tab.dataset.editor === which));
+    }
+    for (const panel of document.querySelectorAll<HTMLElement>('[data-editor-panel]')) {
+      panel.hidden = panel.dataset.editorPanel !== which;
+    }
+    $('#copy-config').hidden = which !== 'config';
     renderFiles();
   }
 
+  function selectFile(index: number, open = false): void {
+    state.selected = Math.max(0, index);
+    fileEditor.setDoc(state.files[state.selected]?.content ?? '');
+    if (open) showEditor('file');
+    else renderFiles();
+  }
+
   function addFile(file: WorkspaceFile): void {
-    selectFile(upsertFile(state.files, file));
+    selectFile(upsertFile(state.files, file), true);
     schedule();
   }
 
@@ -163,6 +251,7 @@ export async function startApp(): Promise<void> {
     state.files = files.map((f) => ({ ...f }));
     configEditor.setDoc(config);
     selectFile(0);
+    showEditor('config');
     void run();
   }
 
@@ -217,8 +306,7 @@ export async function startApp(): Promise<void> {
   function renderVariables(): void {
     $('#variables').replaceChildren(
       ...Object.entries(settings.variables).map(([key, value]) => {
-        const row = document.createElement('div');
-        row.className = 'row';
+        const row = el('div', 'variable');
         const keyInput = Object.assign(document.createElement('input'), { value: key, placeholder: 'NAME' });
         const valueInput = Object.assign(document.createElement('input'), { value, placeholder: 'value', type: 'password' });
         const update = () => {
@@ -229,7 +317,9 @@ export async function startApp(): Promise<void> {
         };
         keyInput.onchange = update;
         valueInput.onchange = update;
-        row.append(keyInput, valueInput, button('Remove', () => {
+        keyInput.setAttribute('aria-label', 'Variable name');
+        valueInput.setAttribute('aria-label', `Value of ${key}`);
+        row.append(keyInput, valueInput, iconButton('x', `Remove ${key}`, () => {
           delete settings.variables[key];
           settingsChanged();
           renderVariables();
@@ -248,19 +338,42 @@ export async function startApp(): Promise<void> {
   };
   renderVariables();
 
+  // --- editor tabs ---
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('.editor-tabs [role=tab]')) {
+    tab.onclick = () => showEditor(tab.dataset.editor as 'config' | 'file');
+  }
+
   // --- output ---
-  for (const tab of document.querySelectorAll<HTMLButtonElement>('[role=tab]')) {
+  const outputTabs = document.querySelectorAll<HTMLButtonElement>('.output-tabs [role=tab]');
+  for (const tab of outputTabs) {
     tab.onclick = () => {
       activeTab = tab.dataset.tab!;
-      for (const t of document.querySelectorAll<HTMLButtonElement>('[role=tab]')) {
-        t.setAttribute('aria-selected', String(t === tab));
-      }
+      for (const t of outputTabs) t.setAttribute('aria-selected', String(t === tab));
       for (const panel of document.querySelectorAll<HTMLElement>('[data-panel]')) {
         panel.hidden = panel.dataset.panel !== activeTab;
+      }
+      for (const actions of document.querySelectorAll<HTMLElement>('[data-panel-actions]')) {
+        actions.hidden = actions.dataset.panelActions !== activeTab;
       }
       if (activeTab === 'reference' && result.text) void showReference($('#reference'), result.text);
     };
   }
+
+  // --- intro ---
+  const intro = $('#intro');
+  try {
+    intro.hidden = localStorage.getItem(INTRO_KEY) === '1';
+  } catch {
+    intro.hidden = false;
+  }
+  $('#dismiss-intro').onclick = () => {
+    intro.hidden = true;
+    try {
+      localStorage.setItem(INTRO_KEY, '1');
+    } catch {
+      // storage blocked: the strip just comes back next visit
+    }
+  };
   $('#allow-fetch').onclick = () => {
     remoteAllowed = true;
     $('#consent').hidden = true;
@@ -268,10 +381,12 @@ export async function startApp(): Promise<void> {
   };
   $('#copy-config').onclick = async () => {
     await navigator.clipboard.writeText(state.config);
-    notice('Config copied. Run it with: openapi-aggregator -c openapi-aggregator.yaml');
+    notice('Config copied. Save it as openapi-aggregator.yaml and run openapi-aggregator.');
   };
   $('#copy-output').onclick = async () => {
-    if (result.text) await navigator.clipboard.writeText(result.text);
+    if (!result.text) return;
+    await navigator.clipboard.writeText(result.text);
+    notice('Merged spec copied.');
   };
   $('#download-output').onclick = () => {
     if (!result.text) return;
@@ -292,7 +407,7 @@ export async function startApp(): Promise<void> {
     const url = `${location.origin}${location.pathname}#s=${encoded}`;
     history.replaceState(null, '', url);
     await navigator.clipboard.writeText(url);
-    notice('Share link copied. It contains the config and workspace files, never your variables or proxy.');
+    notice('Share link copied. It includes the config and files, but not your variables or proxy.');
   };
 
   // --- startup ---

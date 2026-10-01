@@ -10,7 +10,16 @@ let shown = '';
 async function load(el: HTMLElement): Promise<void> {
   const { createApiReference } = await import('@scalar/api-reference');
   await import('@scalar/api-reference/style.css');
-  app = createApiReference(el, { content: latest }) as unknown as ReferenceApp;
+  app = createApiReference(el, {
+    content: latest,
+    showDeveloperTools: 'never',
+    agent: { disabled: true },
+    telemetry: false,
+    withDefaultFonts: false,
+    darkMode: globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
+    hideDarkModeToggle: true,
+    customCss: '.scalar-app { --scalar-font: var(--font-sans); --scalar-font-code: var(--font-mono); }',
+  }) as unknown as ReferenceApp;
   shown = latest;
 }
 
