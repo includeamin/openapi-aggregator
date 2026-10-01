@@ -8,6 +8,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
+openapi-aggregator-core = { path = "crates/openapi-aggregator-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"

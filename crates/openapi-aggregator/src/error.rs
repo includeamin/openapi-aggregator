@@ -9,9 +9,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to parse spec content: {0}")]
-    Parse(String),
-
     #[error("HTTP request failed for '{url}': {source}")]
     HttpRequest {
         url: String,
@@ -19,15 +16,6 @@ pub enum Error {
         source: reqwest::Error,
     },
 
-    #[error("invalid OpenAPI spec from source '{name}': {reason}")]
-    InvalidSpec { name: String, reason: String },
-
-    #[error("merge conflict: {0}")]
-    MergeConflict(String),
-
-    #[error("configuration error: {0}")]
-    Config(String),
-
-    #[error("no sources provided")]
-    NoSources,
+    #[error(transparent)]
+    Core(#[from] openapi_aggregator_core::Error),
 }

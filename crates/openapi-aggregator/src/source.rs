@@ -1,11 +1,10 @@
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::config::Source;
-use crate::error::Error;
-use crate::merge::deep_merge;
+use openapi_aggregator_core::{prepare_source, Error as CoreError, Source};
 
-/// Load an OpenAPI spec from a [`Source`], returning `(name, parsed_value)`.
+use crate::error::Error;
+
 pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
     load_source_with_client(source, &http_client()?).await
 }
@@ -14,7 +13,11 @@ pub(crate) fn http_client() -> Result<reqwest::Client, Error> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| Error::Config(format!("failed to create HTTP client: {e}")))
+        .map_err(|e| {
+            Error::from(CoreError::Config(format!(
+                "failed to create HTTP client: {e}"
+            )))
+        })
 }
 
 pub(crate) async fn load_source_with_client(
@@ -52,34 +55,7 @@ pub(crate) async fn load_source_with_client(
         }
     };
 
-    let value = parse_and_prepare(&content, source)?;
-    validate_openapi(&value, &source.display_name())?;
-    Ok((source.display_name(), value))
-}
-
-fn parse_and_prepare(content: &str, source: &Source) -> Result<Value, Error> {
-    let mut value = parse_content(content)?;
-    if let Some(blocks) = source_additional_blocks(source) {
-        if !blocks.is_object() {
-            return Err(Error::InvalidSpec {
-                name: source.display_name(),
-                reason: "'additional_blocks' must be a mapping/object".into(),
-            });
-        }
-        deep_merge(&mut value, blocks);
-    }
-    Ok(value)
-}
-
-fn source_additional_blocks(source: &Source) -> Option<&Value> {
-    match source {
-        Source::File {
-            additional_blocks, ..
-        }
-        | Source::Http {
-            additional_blocks, ..
-        } => additional_blocks.as_ref(),
-    }
+    Ok(prepare_source(&content, source)?)
 }
 
 /// Replace `${NAME}` placeholders with environment variables.
@@ -95,121 +71,17 @@ fn expand_env_with(text: &str, lookup: impl Fn(&str) -> Option<String>) -> Resul
             break;
         };
         let name = &rest[start + 2..start + 2 + len];
-        let value = lookup(name)
-            .ok_or_else(|| Error::Config(format!("environment variable '{name}' is not set")))?;
+        let value = lookup(name).ok_or_else(|| {
+            Error::from(CoreError::Config(format!(
+                "environment variable '{name}' is not set"
+            )))
+        })?;
         out.push_str(&rest[..start]);
         out.push_str(&value);
         rest = &rest[start + 2 + len + 1..];
     }
     out.push_str(rest);
     Ok(out)
-}
-
-/// Try JSON first, fall back to YAML.
-fn parse_content(content: &str) -> Result<Value, Error> {
-    serde_json::from_str(content).or_else(|_| {
-        serde_yaml::from_str::<Value>(content)
-            .map_err(|e| Error::Parse(format!("content is neither valid JSON nor YAML: {e}")))
-    })
-}
-
-/// Minimal validation: the value must be an object with an `openapi` field.
-fn validate_openapi(value: &Value, source_name: &str) -> Result<(), Error> {
-    match value.get("openapi").and_then(|v| v.as_str()) {
-        Some(v) if v.starts_with("3.") => Ok(()),
-        Some(v) => Err(Error::InvalidSpec {
-            name: source_name.into(),
-            reason: format!("unsupported OpenAPI version '{v}' (only 3.x is supported)"),
-        }),
-        None => Err(Error::InvalidSpec {
-            name: source_name.into(),
-            reason: "missing 'openapi' field".into(),
-        }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::PathBuf;
-
-    #[test]
-    fn parse_json_content() {
-        let json = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;
-        let v = parse_content(json).unwrap();
-        assert_eq!(v["openapi"], "3.0.3");
-    }
-
-    #[test]
-    fn parse_yaml_content() {
-        let yaml = "openapi: '3.0.3'\ninfo:\n  title: T\n  version: '1'\npaths: {}";
-        let v = parse_content(yaml).unwrap();
-        assert_eq!(v["openapi"], "3.0.3");
-    }
-
-    #[test]
-    fn validate_rejects_missing_openapi() {
-        let v = serde_json::json!({"info": {}});
-        assert!(validate_openapi(&v, "test").is_err());
-    }
-
-    #[test]
-    fn validate_rejects_v2() {
-        let v = serde_json::json!({"openapi": "2.0"});
-        assert!(validate_openapi(&v, "test").is_err());
-    }
-
-    #[test]
-    fn additional_blocks_are_deep_merged() {
-        let source = Source::File {
-            name: Some("test".into()),
-            path: PathBuf::from("ignored.yaml"),
-            tag_prefix: None,
-            additional_blocks: Some(json!({
-                "x-vendor-root": { "enabled": true },
-                "paths": {
-                    "/pets": {
-                        "get": {
-                            "x-vendor-extension": { "timeout": 3000 }
-                        }
-                    }
-                }
-            })),
-        };
-
-        let base = r#"{
-            "openapi": "3.0.3",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/pets": {
-                    "get": {"summary": "list pets"}
-                }
-            }
-        }"#;
-
-        let merged = parse_and_prepare(base, &source).unwrap();
-        assert_eq!(merged["x-vendor-root"]["enabled"], true);
-        assert_eq!(merged["paths"]["/pets"]["get"]["summary"], "list pets");
-        assert_eq!(
-            merged["paths"]["/pets"]["get"]["x-vendor-extension"]["timeout"],
-            3000
-        );
-    }
-
-    #[test]
-    fn additional_blocks_must_be_object() {
-        let source = Source::File {
-            name: Some("test".into()),
-            path: PathBuf::from("ignored.yaml"),
-            tag_prefix: None,
-            additional_blocks: Some(json!([1, 2, 3])),
-        };
-
-        let base = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;
-        let err = parse_and_prepare(base, &source).unwrap_err().to_string();
-        assert!(err.contains("additional_blocks"));
-    }
 }
 
 #[cfg(test)]

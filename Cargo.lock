@@ -710,13 +710,23 @@ dependencies = [
  "clap",
  "futures-util",
  "mockito",
+ "openapi-aggregator-core",
  "reqwest",
- "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "openapi-aggregator-core"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

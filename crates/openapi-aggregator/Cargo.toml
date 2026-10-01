@@ -17,8 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+openapi-aggregator-core.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true

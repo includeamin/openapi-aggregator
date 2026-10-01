@@ -38,7 +38,7 @@ curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main
 ### From source
 
 ```sh
-cargo install --path .
+cargo install --path crates/openapi-aggregator
 ```
 
 ### Pre-built binaries

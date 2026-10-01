@@ -1,19 +1,18 @@
-pub mod config;
 pub mod error;
-pub mod merge;
 pub mod source;
 
-pub use config::{
-    Config, ConflictStrategy, InfoOverride, MergeConfig, OutputFormat, ServerEntry, Source,
-    TagEntry, TagPrefixStrategy,
-};
 pub use error::Error;
-pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
+pub use openapi_aggregator_core::{
+    config, merge, merge_specs, merge_specs_with_report, parse_content, prepare_source, Config,
+    ConflictStrategy, InfoOverride, MergeConfig, MergeReport, OutputConfig, OutputFormat,
+    ServerEntry, Source, TagEntry, TagPrefixStrategy,
+};
 pub use source::load_source;
 
 use std::path::Path;
 
 use futures_util::future::try_join_all;
+use openapi_aggregator_core::Error as CoreError;
 use source::{http_client, load_source_with_client};
 
 /// Load all sources defined in `config` and merge them into a single OpenAPI spec.
@@ -28,7 +27,7 @@ pub async fn aggregate(config: &Config) -> Result<serde_json::Value, Error> {
 /// Sources are loaded concurrently; the merge order still follows `config.sources`.
 pub async fn aggregate_with_report(config: &Config) -> Result<MergeReport, Error> {
     if config.sources.is_empty() {
-        return Err(Error::NoSources);
+        return Err(CoreError::NoSources.into());
     }
 
     let client = http_client()?;
@@ -38,15 +37,14 @@ pub async fn aggregate_with_report(config: &Config) -> Result<MergeReport, Error
     }))
     .await?;
 
-    merge_specs_with_report(specs, &config.merge)
+    Ok(merge_specs_with_report(specs, &config.merge)?)
 }
 
 /// Read a config file and resolve relative source paths against its directory.
 pub fn load_config(path: &Path) -> Result<Config, Error> {
     let content = std::fs::read_to_string(path)
-        .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
-    let mut config: Config = serde_yaml::from_str(&content)
-        .map_err(|e| Error::Config(format!("failed to parse config file: {e}")))?;
+        .map_err(|e| CoreError::Config(format!("failed to read config file: {e}")))?;
+    let mut config = Config::from_yaml(&content)?;
 
     if let Some(config_dir) = path.parent() {
         for src in &mut config.sources {

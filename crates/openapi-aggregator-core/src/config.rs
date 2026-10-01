@@ -14,6 +14,14 @@ pub struct Config {
     pub merge: MergeConfig,
 }
 
+impl Config {
+    /// Parse a YAML (or JSON) config document.
+    pub fn from_yaml(text: &str) -> Result<Self, crate::error::Error> {
+        serde_yaml::from_str(text)
+            .map_err(|e| crate::error::Error::Config(format!("failed to parse config file: {e}")))
+    }
+}
+
 /// A source of an OpenAPI specification.
 ///
 /// Detected automatically: if `url` is present it is treated as an HTTP source,
@@ -304,6 +312,18 @@ mod tests {
                 .unwrap();
         assert!(matches!(config.sources[0], Source::File { .. }));
         assert!(matches!(&config.sources[1], Source::Http { headers, .. } if headers["A"] == "b"));
+    }
+
+    #[test]
+    fn from_yaml_wraps_errors_as_config_errors() {
+        let err = Config::from_yaml("sources: [{name: x}]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("configuration error: failed to parse config file:"),
+            "{err}"
+        );
+        assert!(err.contains("either 'path' or 'url'"), "{err}");
     }
 
     #[test]
