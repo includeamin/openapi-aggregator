@@ -4,6 +4,8 @@ Aggregate and merge OpenAPI 3.x specifications from multiple sources into a sing
 
 Available as both a **Rust library** and a **CLI tool**.
 
+**Try it in your browser:** the [playground](https://includeamin.github.io/openapi-aggregator/) runs the same merge engine compiled to WebAssembly. Add specs, edit the config, and share the result as a link.
+
 ## Features
 
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
@@ -209,6 +211,17 @@ cargo clippy --all-targets -- -D warnings
 
 # Format
 cargo fmt
+```
+
+### Web playground
+
+```sh
+cd web
+npm ci
+npm run wasm     # build the WASM engine (needs wasm-pack + wasm32-unknown-unknown target)
+npm run dev      # http://localhost:5173/openapi-aggregator/
+npm test         # unit tests
+npm run e2e      # Playwright smoke test
 ```
 
 ## License
