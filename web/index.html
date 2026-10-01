@@ -3,66 +3,184 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenAPI Aggregator Playground</title>
-    <link rel="icon" href="data:," />
+    <title>Merge OpenAPI specs online | openapi-aggregator playground</title>
+    <meta name="description" content="Merge multiple OpenAPI 3.x (Swagger) specs from many microservices into one spec, right in your browser. Resolve path and schema conflicts, rewrite $refs, prefix tags, and export YAML or JSON. Free and open source, with a Rust CLI." />
+    <meta name="keywords" content="merge openapi, openapi merge, combine openapi specs, openapi aggregator, swagger merge, merge swagger files, openapi 3.1, microservices api documentation, api gateway, rust cli" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#2f7d4f" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1520" media="(prefers-color-scheme: dark)" />
+    <link rel="canonical" href="https://includeamin.github.io/openapi-aggregator/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="openapi-aggregator" />
+    <meta property="og:title" content="Merge OpenAPI specs online | openapi-aggregator playground" />
+    <meta property="og:description" content="Merge OpenAPI specs from many services into one, in your browser. Same engine as the openapi-aggregator Rust CLI." />
+    <meta property="og:url" content="https://includeamin.github.io/openapi-aggregator/" />
+    <meta property="og:image" content="https://includeamin.github.io/openapi-aggregator/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="openapi-aggregator: merge OpenAPI specs from many services into one" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Merge OpenAPI specs online | openapi-aggregator playground" />
+    <meta name="twitter:description" content="Merge OpenAPI specs from many services into one, in your browser. Same engine as the Rust CLI." />
+    <meta name="twitter:image" content="https://includeamin.github.io/openapi-aggregator/og-image.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "openapi-aggregator",
+        "alternateName": "OpenAPI Aggregator playground",
+        "description": "Merge OpenAPI 3.x specifications from multiple services into a single spec, with conflict resolution, $ref rewriting and tag prefixing. Available as a browser playground, a Rust CLI and a Rust library.",
+        "url": "https://includeamin.github.io/openapi-aggregator/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Web browser, Linux, macOS, Windows",
+        "isAccessibleForFree": true,
+        "license": "https://opensource.org/licenses/MIT",
+        "codeRepository": "https://github.com/includeamin/openapi-aggregator",
+        "sameAs": ["https://github.com/includeamin/openapi-aggregator"],
+        "image": "https://includeamin.github.io/openapi-aggregator/og-image.png",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232F7D4F' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M3 5c6 0 7 7 13 7M3 19c6 0 7-7 13-7M3 12h13'/%3E%3Ccircle cx='19' cy='12' r='2.5' fill='%232F7D4F'/%3E%3C/svg%3E" />
   </head>
   <body>
-    <header class="topbar">
-      <h1>openapi-aggregator <span>playground</span></h1>
-      <label>Example <select id="examples"></select></label>
-      <button id="share" type="button">Copy share link</button>
-      <a href="https://github.com/includeamin/openapi-aggregator">GitHub</a>
-    </header>
-    <div id="notice" class="notice" role="status" hidden></div>
-    <div id="consent" class="notice consent" role="alert" hidden>
-      <span id="consent-text"></span>
-      <button id="allow-fetch" type="button">Allow fetching</button>
-    </div>
-    <main class="layout">
-      <section class="inputs" aria-label="Inputs">
-        <h2>Workspace</h2>
-        <ul id="files" class="files"></ul>
-        <div class="row">
-          <button id="add-file" type="button">New file</button>
-          <label class="button">Upload<input id="upload" type="file" accept=".yaml,.yml,.json" multiple hidden /></label>
-          <button id="import-url" type="button">Import from URL</button>
-        </div>
-        <div id="file-editor" class="editor"></div>
-
-        <h2>Config <small>openapi-aggregator.yaml</small></h2>
-        <div class="row"><button id="copy-config" type="button">Copy config</button></div>
-        <div id="config-editor" class="editor"></div>
-
-        <details id="settings">
-          <summary>Settings</summary>
-          <label class="field">CORS proxy prefix
-            <input id="proxy" type="url" placeholder="https://my-proxy.example.com/?url=" />
+    <noscript>
+      <h1>openapi-aggregator playground</h1>
+      <p>
+        Merge OpenAPI 3.x specs from many services into one, with conflict resolution, $ref rewriting and tag prefixing.
+        This playground needs JavaScript. You can also use the
+        <a href="https://github.com/includeamin/openapi-aggregator">openapi-aggregator CLI</a>.
+      </p>
+    </noscript>
+    <div class="app">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="openapi-aggregator playground home">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 5c6 0 7 7 13 7M3 19c6 0 7-7 13-7M3 12h13" />
+            <circle cx="19" cy="12" r="2.5" />
+          </svg>
+          <span class="brand-name">openapi-aggregator</span>
+        </a>
+        <h1 class="visually-hidden">openapi-aggregator playground: merge OpenAPI specs online</h1>
+        <p class="tagline">Merge OpenAPI specs from many services into one</p>
+        <div class="topbar-actions">
+          <label class="select">
+            <span class="visually-hidden">Example</span>
+            <select id="examples" aria-label="Load an example"></select>
           </label>
-          <p class="hint">Prepended to every fetched URL. Stored only in this browser.</p>
-          <h3>Variables</h3>
-          <p class="hint">Values for <code>${VAR}</code> in source URLs and headers. Stored only in this browser and never included in share links.</p>
-          <div id="variables"></div>
-          <button id="add-variable" type="button">Add variable</button>
-        </details>
-      </section>
+          <button id="share" class="btn btn-primary" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" /></svg>
+            Copy share link
+          </button>
+          <a class="icon-btn" href="https://github.com/includeamin/openapi-aggregator" title="Source on GitHub" aria-label="Source on GitHub">
+            <svg class="icon icon-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z" /></svg>
+          </a>
+        </div>
+      </header>
 
-      <section class="outputs" aria-label="Output">
-        <div class="tabs" role="tablist">
-          <button role="tab" data-tab="merged" aria-selected="true">Merged spec</button>
-          <button role="tab" data-tab="reference" aria-selected="false">API reference</button>
-          <button role="tab" data-tab="problems" aria-selected="false">Problems <span id="problem-count"></span></button>
-        </div>
-        <div class="panel" data-panel="merged">
-          <div class="row">
-            <button id="copy-output" type="button">Copy</button>
-            <button id="download-output" type="button">Download</button>
+      <div id="intro" class="intro" hidden>
+        <p>
+          Add specs, write an <code>openapi-aggregator.yaml</code> config, and see the merged result.
+          Everything runs in your browser with the same engine as the CLI, so nothing is uploaded.
+        </p>
+        <a href="https://github.com/includeamin/openapi-aggregator#installation">Install the CLI</a>
+        <a href="https://github.com/includeamin/openapi-aggregator#merge-behaviour">How merging works</a>
+        <button id="dismiss-intro" class="icon-btn" type="button" aria-label="Dismiss" title="Dismiss">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </div>
+
+      <div id="consent" class="consent" role="alert" hidden>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 20h20L12 3Zm0 6v5m0 3v.5" /></svg>
+        <span id="consent-text"></span>
+        <button id="allow-fetch" class="btn" type="button">Allow fetching</button>
+      </div>
+
+      <main class="workbench">
+        <aside class="pane sidebar" aria-label="Workspace">
+          <div class="pane-header">
+            <h2>Files</h2>
+            <div class="pane-actions">
+              <button id="add-file" class="icon-btn" type="button" title="New file" aria-label="New file">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              </button>
+              <label class="icon-btn" title="Upload files" aria-label="Upload files">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+                <input id="upload" type="file" accept=".yaml,.yml,.json" multiple hidden />
+              </label>
+              <button id="import-url" class="icon-btn" type="button" title="Import from URL" aria-label="Import from URL">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4m10 0h4M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z" /></svg>
+              </button>
+            </div>
           </div>
-          <pre id="output"></pre>
-        </div>
-        <div class="panel" data-panel="reference" hidden><div id="reference"></div></div>
-        <div class="panel" data-panel="problems" hidden><ul id="problems" class="problems"></ul></div>
-      </section>
-    </main>
+          <ul id="files" class="files"></ul>
+          <p id="files-empty" class="empty" hidden>No files yet. Add one, upload a spec, or import it from a URL.</p>
+
+          <details id="settings" class="settings">
+            <summary>Settings</summary>
+            <label class="field">
+              <span>CORS proxy prefix</span>
+              <input id="proxy" type="url" placeholder="https://my-proxy.example.com/?url=" />
+            </label>
+            <p class="hint">Added in front of every fetched URL. Stored only in this browser.</p>
+            <div class="field">
+              <span>Variables</span>
+              <p class="hint">Values for <code>${VAR}</code> in source URLs and headers. Stored only in this browser and never put in share links.</p>
+              <div id="variables" class="variables"></div>
+              <button id="add-variable" class="btn btn-small" type="button">Add variable</button>
+            </div>
+          </details>
+        </aside>
+
+        <section class="pane editor-pane" aria-label="Editor">
+          <div class="pane-header tabs-header">
+            <div class="tabs editor-tabs" role="tablist" aria-label="Open documents">
+              <button role="tab" data-editor="config" aria-selected="true">openapi-aggregator.yaml</button>
+              <button role="tab" data-editor="file" aria-selected="false" id="file-tab" hidden></button>
+            </div>
+            <div class="pane-actions">
+              <button id="copy-config" class="btn btn-small" type="button">Copy config</button>
+            </div>
+          </div>
+          <div id="config-editor" class="editor" data-editor-panel="config"></div>
+          <div id="file-editor" class="editor" data-editor-panel="file" hidden></div>
+        </section>
+
+        <section class="pane output-pane" aria-label="Output">
+          <div class="pane-header tabs-header">
+            <div class="tabs output-tabs" role="tablist" aria-label="Output">
+              <button role="tab" data-tab="merged" aria-selected="true">Merged spec</button>
+              <button role="tab" data-tab="reference" aria-selected="false">API reference</button>
+              <button role="tab" data-tab="problems" aria-selected="false">Problems <span id="problem-count" class="badge"></span></button>
+            </div>
+            <div class="pane-actions" data-panel-actions="merged">
+              <button id="copy-output" class="icon-btn" type="button" title="Copy merged spec" aria-label="Copy merged spec">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h11v11H9zM5 15H4V4h11v1" /></svg>
+              </button>
+              <button id="download-output" class="icon-btn" type="button" title="Download merged spec" aria-label="Download merged spec">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="panel" data-panel="merged"><pre id="output" class="code"></pre></div>
+          <div class="panel" data-panel="reference" hidden><div id="reference"></div></div>
+          <div class="panel" data-panel="problems" hidden><ul id="problems" class="problems"></ul></div>
+        </section>
+      </main>
+
+      <footer class="statusbar" aria-live="polite">
+        <span id="status" class="status" data-state="ok"><span class="status-dot"></span><span id="status-label">Starting</span></span>
+        <span id="status-sources" class="status-sources"></span>
+        <span id="status-problems"></span>
+        <span id="status-format"></span>
+        <span class="status-spacer"></span>
+        <span class="status-note">Runs locally in your browser</span>
+      </footer>
+    </div>
+
+    <div id="notice" class="toast" role="status" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

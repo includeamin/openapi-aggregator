@@ -18,7 +18,7 @@ test('editing the config re-runs the merge and surfaces config errors', async ({
   await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('sources: [{name: x}]');
 
-  await expect(page.locator('#problem-count')).toHaveText('(1)');
+  await expect(page.locator('#problem-count')).toHaveText('1');
   await page.getByRole('tab', { name: /Problems/ }).click();
   await expect(page.locator('#problems')).toContainText("either 'path' or 'url'");
 });
