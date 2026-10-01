@@ -8,36 +8,46 @@ pub use config::{
     TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
-pub use merge::merge_specs;
+pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
 pub use source::load_source;
 
 use std::path::Path;
 
+use futures_util::future::try_join_all;
+use source::{http_client, load_source_with_client};
+
 /// Load all sources defined in `config` and merge them into a single OpenAPI spec.
 pub async fn aggregate(config: &Config) -> Result<serde_json::Value, Error> {
+    aggregate_with_report(config)
+        .await
+        .map(|report| report.spec)
+}
+
+/// Like [`aggregate`], but also returns non-fatal merge warnings.
+///
+/// Sources are loaded concurrently; the merge order still follows `config.sources`.
+pub async fn aggregate_with_report(config: &Config) -> Result<MergeReport, Error> {
     if config.sources.is_empty() {
         return Err(Error::NoSources);
     }
 
-    let mut specs = Vec::with_capacity(config.sources.len());
-    for src in &config.sources {
-        let (name, spec) = load_source(src).await?;
-        let tag_prefix = src.tag_prefix();
-        specs.push((name, tag_prefix, spec));
-    }
+    let client = http_client()?;
+    let specs = try_join_all(config.sources.iter().map(|src| async {
+        let (name, spec) = load_source_with_client(src, &client).await?;
+        Ok::<_, Error>((name, src.tag_prefix(), spec))
+    }))
+    .await?;
 
-    merge_specs(specs, &config.merge)
+    merge_specs_with_report(specs, &config.merge)
 }
 
-/// Read a config file, resolve relative source paths against its directory,
-/// then aggregate.
-pub async fn aggregate_from_file(path: &Path) -> Result<serde_json::Value, Error> {
+/// Read a config file and resolve relative source paths against its directory.
+pub fn load_config(path: &Path) -> Result<Config, Error> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
     let mut config: Config = serde_yaml::from_str(&content)
         .map_err(|e| Error::Config(format!("failed to parse config file: {e}")))?;
 
-    // Resolve relative file paths against the config file's directory
     if let Some(config_dir) = path.parent() {
         for src in &mut config.sources {
             if let Source::File {
@@ -52,5 +62,11 @@ pub async fn aggregate_from_file(path: &Path) -> Result<serde_json::Value, Error
         }
     }
 
-    aggregate(&config).await
+    Ok(config)
+}
+
+/// Read a config file, resolve relative source paths against its directory,
+/// then aggregate.
+pub async fn aggregate_from_file(path: &Path) -> Result<serde_json::Value, Error> {
+    aggregate(&load_config(path)?).await
 }

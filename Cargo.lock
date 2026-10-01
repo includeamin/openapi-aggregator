@@ -708,6 +708,7 @@ name = "openapi-aggregator"
 version = "0.6.0"
 dependencies = [
  "clap",
+ "futures-util",
  "mockito",
  "reqwest",
  "serde",

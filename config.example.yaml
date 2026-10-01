@@ -24,7 +24,7 @@ sources:
   - name: billing
     url: https://billing.example.com/openapi.json
     headers:
-      Authorization: "Bearer your-token-here"
+      Authorization: "Bearer ${BILLING_TOKEN}"  # ${VAR} is read from the environment
       Accept: "application/json"
     # additional_blocks:
     #   x-another-extension:
@@ -40,6 +40,7 @@ merge:
   #   error     – fail immediately (default)
   #   overwrite – last source wins
   #   rename    – prefix conflicting names with the source name
+  # Different methods on the same path and identical definitions are never conflicts.
   conflict_strategy: error
 
   # Prefix every path with /{source_name} to guarantee uniqueness

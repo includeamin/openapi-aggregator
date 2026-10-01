@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
 use crate::config::{ConflictStrategy, InfoOverride, MergeConfig, TagPrefixStrategy};
 use crate::error::Error;
 
+/// Component types in the order they are emitted in the merged spec.
 const COMPONENT_TYPES: &[&str] = &[
     "schemas",
     "responses",
@@ -15,7 +16,19 @@ const COMPONENT_TYPES: &[&str] = &[
     "securitySchemes",
     "links",
     "callbacks",
+    "pathItems",
 ];
+
+const HTTP_METHODS: &[&str] = &[
+    "get", "post", "put", "patch", "delete", "options", "head", "trace",
+];
+
+/// The merged spec plus any non-fatal warnings raised while merging.
+#[derive(Debug, Clone)]
+pub struct MergeReport {
+    pub spec: Value,
+    pub warnings: Vec<String>,
+}
 
 /// Merge multiple named OpenAPI specs into one according to `config`.
 ///
@@ -24,6 +37,15 @@ pub fn merge_specs(
     specs: Vec<(String, String, Value)>,
     config: &MergeConfig,
 ) -> Result<Value, Error> {
+    merge_specs_with_report(specs, config).map(|report| report.spec)
+}
+
+/// Like [`merge_specs`], but also returns non-fatal warnings
+/// (e.g. sources using different OpenAPI minor versions).
+pub fn merge_specs_with_report(
+    specs: Vec<(String, String, Value)>,
+    config: &MergeConfig,
+) -> Result<MergeReport, Error> {
     if specs.is_empty() {
         return Err(Error::NoSources);
     }
@@ -34,6 +56,7 @@ pub fn merge_specs(
     if let Some(version) = specs[0].2.get("openapi") {
         merged.insert("openapi".into(), version.clone());
     }
+    let warnings = version_warnings(&specs);
 
     // --- info ---
     let info = build_info(&specs, config.info.as_ref())?;
@@ -41,14 +64,19 @@ pub fn merge_specs(
 
     // --- paths & components (incremental merge) ---
     let mut merged_paths = Map::new();
+    let mut merged_webhooks = Map::new();
     let mut merged_components: HashMap<String, Map<String, Value>> = HashMap::new();
+    let mut merged_component_extras = Map::new();
     let mut merged_tags: Vec<Value> = Vec::new();
     let mut merged_servers: Vec<Value> = Vec::new();
+    let mut merged_security: Vec<Value> = Vec::new();
     let mut merged_custom_top_level = Map::new();
 
     for (source_name, tag_prefix, mut spec) in specs {
+        let ident = sanitize_ident(&source_name);
+
         // Phase 1: detect component conflicts and build a $ref rename map
-        let rename_map = build_rename_map(&source_name, &spec, &merged_components, config)?;
+        let rename_map = build_rename_map(&ident, &spec, &merged_components, config);
 
         // Phase 2: rewrite $refs in the source spec if needed
         if !rename_map.is_empty() {
@@ -61,18 +89,50 @@ pub fn merge_specs(
         }
 
         // Phase 3a: merge paths
-        merge_paths(&source_name, &spec, &mut merged_paths, config)?;
+        merge_path_items(
+            &source_name,
+            "path",
+            spec.get("paths"),
+            &mut merged_paths,
+            &config.conflict_strategy,
+            |path| {
+                if config.prefix_paths {
+                    format!("/{ident}{path}")
+                } else {
+                    path.to_string()
+                }
+            },
+            |path, n| match n {
+                1 => format!("/{ident}{path}"),
+                n => format!("/{ident}_{n}{path}"),
+            },
+        )?;
 
-        // Phase 3b: merge components
+        // Phase 3b: merge webhooks (OpenAPI 3.1)
+        merge_path_items(
+            &source_name,
+            "webhook",
+            spec.get("webhooks"),
+            &mut merged_webhooks,
+            &config.conflict_strategy,
+            str::to_string,
+            |name, n| match n {
+                1 => format!("{ident}_{name}"),
+                n => format!("{ident}_{n}_{name}"),
+            },
+        )?;
+
+        // Phase 3c: merge components
         merge_components(
             &source_name,
             &spec,
             &mut merged_components,
+            &mut merged_component_extras,
             &rename_map,
             config,
         )?;
 
-        // Phase 3c: merge tags
+        // Phase 3d: merge tags
         if let Some(Value::Array(tags)) = spec.get("tags") {
             for tag in tags {
                 let original_name = tag.get("name").and_then(|n| n.as_str());
@@ -104,7 +164,7 @@ pub fn merge_specs(
             }
         }
 
-        // Phase 3d: merge servers (deduplicate by url)
+        // Phase 3e: merge servers (deduplicate by url)
         if let Some(Value::Array(servers)) = spec.get("servers") {
             for server in servers {
                 let url = server.get("url").and_then(|u| u.as_str());
@@ -119,14 +179,23 @@ pub fn merge_specs(
             }
         }
 
-        // Phase 3e: merge non-standard top-level blocks (e.g. vendor extensions)
+        // Phase 3f: merge top-level security requirements (deduplicate)
+        if let Some(Value::Array(requirements)) = spec.get("security") {
+            for requirement in requirements {
+                if !merged_security.contains(requirement) {
+                    merged_security.push(requirement.clone());
+                }
+            }
+        }
+
+        // Phase 3g: merge non-standard top-level blocks (e.g. vendor extensions)
         if let Some(root) = spec.as_object() {
             for (key, value) in root {
                 if is_reserved_top_level_key(key) {
                     continue;
                 }
                 if let Some(existing) = merged_custom_top_level.get_mut(key) {
-                    deep_merge_value(existing, value);
+                    deep_merge(existing, value);
                 } else {
                     merged_custom_top_level.insert(key.clone(), value.clone());
                 }
@@ -140,11 +209,18 @@ pub fn merge_specs(
 
     merged.insert("paths".into(), Value::Object(merged_paths));
 
-    if !merged_components.is_empty() {
-        let mut comp_obj = Map::new();
-        for (ctype, items) in merged_components {
-            comp_obj.insert(ctype, Value::Object(items));
+    if !merged_webhooks.is_empty() {
+        merged.insert("webhooks".into(), Value::Object(merged_webhooks));
+    }
+
+    let mut comp_obj = Map::new();
+    for &ctype in COMPONENT_TYPES {
+        if let Some(items) = merged_components.remove(ctype) {
+            comp_obj.insert(ctype.into(), Value::Object(items));
         }
+    }
+    comp_obj.extend(merged_component_extras);
+    if !comp_obj.is_empty() {
         merged.insert("components".into(), Value::Object(comp_obj));
     }
 
@@ -184,7 +260,14 @@ pub fn merge_specs(
         merged.insert("servers".into(), Value::Array(merged_servers));
     }
 
-    Ok(Value::Object(merged))
+    if !merged_security.is_empty() {
+        merged.insert("security".into(), Value::Array(merged_security));
+    }
+
+    Ok(MergeReport {
+        spec: Value::Object(merged),
+        warnings,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -220,19 +303,63 @@ fn build_info(
     Ok(info)
 }
 
+/// Warn about sources whose `major.minor` OpenAPI version differs from the first source.
+fn version_warnings(specs: &[(String, String, Value)]) -> Vec<String> {
+    fn minor(version: &str) -> &str {
+        match version.match_indices('.').nth(1) {
+            Some((idx, _)) => &version[..idx],
+            None => version,
+        }
+    }
+
+    let Some(first) = specs[0].2.get("openapi").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+
+    specs
+        .iter()
+        .skip(1)
+        .filter_map(|(name, _, spec)| {
+            let version = spec.get("openapi")?.as_str()?;
+            (minor(version) != minor(first)).then(|| {
+                format!(
+                    "source '{name}' uses OpenAPI {version}, but the merged spec uses {first} \
+                     (taken from the first source)"
+                )
+            })
+        })
+        .collect()
+}
+
+/// Make a source name safe for use in URL paths and component names
+/// (`^[a-zA-Z0-9._-]+$`).
+fn sanitize_ident(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn is_reserved_top_level_key(key: &str) -> bool {
     matches!(
         key,
-        "openapi" | "info" | "paths" | "components" | "tags" | "servers"
+        "openapi" | "info" | "paths" | "webhooks" | "components" | "tags" | "servers" | "security"
     )
 }
 
-fn deep_merge_value(target: &mut Value, patch: &Value) {
+/// Recursively merge `patch` into `target`. Objects are merged key by key;
+/// any other value in `patch` replaces the one in `target`.
+pub(crate) fn deep_merge(target: &mut Value, patch: &Value) {
     match (target, patch) {
         (Value::Object(target_map), Value::Object(patch_map)) => {
             for (key, patch_value) in patch_map {
                 if let Some(existing) = target_map.get_mut(key) {
-                    deep_merge_value(existing, patch_value);
+                    deep_merge(existing, patch_value);
                 } else {
                     target_map.insert(key.clone(), patch_value.clone());
                 }
@@ -246,14 +373,10 @@ fn deep_merge_value(target: &mut Value, patch: &Value) {
 
 /// Rewrite tag arrays inside all operations of a source spec, prefixing each tag name.
 fn rewrite_spec_operation_tags(spec: &mut Value, tag_prefix: &str, config: &MergeConfig) {
-    let http_methods = [
-        "get", "post", "put", "patch", "delete", "options", "head", "trace",
-    ];
-
     if let Some(Value::Object(paths)) = spec.get_mut("paths") {
         for (_path_key, path_item) in paths.iter_mut() {
             if let Some(obj) = path_item.as_object_mut() {
-                for method in &http_methods {
+                for method in HTTP_METHODS {
                     if let Some(operation) = obj.get_mut(*method) {
                         if let Some(Value::Array(tags)) = operation.get_mut("tags") {
                             for tag_val in tags.iter_mut() {
@@ -273,48 +396,95 @@ fn rewrite_spec_operation_tags(spec: &mut Value, tag_prefix: &str, config: &Merg
     }
 }
 
+fn component_ref(ctype: &str, name: &str) -> String {
+    format!("#/components/{ctype}/{name}")
+}
+
 /// For the rename strategy: figure out which component names in `spec` clash
-/// with already-merged names and return a map from old `$ref` → new `$ref`.
+/// with already-merged, *different* components and return a map from
+/// old `$ref` → new `$ref`.
+///
+/// Identical components are shared rather than renamed. Because renaming one
+/// component changes the `$ref`s inside the components that point at it, the
+/// comparison is repeated until no new renames appear.
 fn build_rename_map(
-    source_name: &str,
+    ident: &str,
     spec: &Value,
     merged_components: &HashMap<String, Map<String, Value>>,
     config: &MergeConfig,
-) -> Result<HashMap<String, String>, Error> {
+) -> HashMap<String, String> {
     let mut rename_map = HashMap::new();
 
     if config.conflict_strategy != ConflictStrategy::Rename {
-        return Ok(rename_map);
+        return rename_map;
     }
+    let Some(components) = spec.get("components") else {
+        return rename_map;
+    };
 
+    // Names that a renamed component must not take.
+    let mut taken: HashMap<&str, HashSet<String>> = HashMap::new();
     for &ctype in COMPONENT_TYPES {
-        if let Some(Value::Object(items)) = spec.get("components").and_then(|c| c.get(ctype)) {
-            if let Some(existing) = merged_components.get(ctype) {
-                for item_name in items.keys() {
-                    if existing.contains_key(item_name) {
-                        let old_ref = format!("#/components/{ctype}/{item_name}");
-                        let new_name = format!("{source_name}_{item_name}");
-                        let new_ref = format!("#/components/{ctype}/{new_name}");
-                        rename_map.insert(old_ref, new_ref);
-                    }
-                }
-            }
+        let names = taken.entry(ctype).or_default();
+        if let Some(existing) = merged_components.get(ctype) {
+            names.extend(existing.keys().cloned());
+        }
+        if let Some(Value::Object(items)) = components.get(ctype) {
+            names.extend(items.keys().cloned());
         }
     }
 
-    Ok(rename_map)
+    loop {
+        let mut candidate = components.clone();
+        rewrite_refs(&mut candidate, &rename_map);
+
+        let mut changed = false;
+        for &ctype in COMPONENT_TYPES {
+            let (Some(Value::Object(items)), Some(existing)) =
+                (candidate.get(ctype), merged_components.get(ctype))
+            else {
+                continue;
+            };
+            for (name, value) in items {
+                let old_ref = component_ref(ctype, name);
+                if rename_map.contains_key(&old_ref)
+                    || existing.get(name).is_none_or(|e| e == value)
+                {
+                    continue;
+                }
+                let names = taken.entry(ctype).or_default();
+                let mut n = 1;
+                let new_name = loop {
+                    let candidate_name = match n {
+                        1 => format!("{ident}_{name}"),
+                        n => format!("{ident}_{n}_{name}"),
+                    };
+                    if !names.contains(&candidate_name) {
+                        break candidate_name;
+                    }
+                    n += 1;
+                };
+                names.insert(new_name.clone());
+                rename_map.insert(old_ref, component_ref(ctype, &new_name));
+                changed = true;
+            }
+        }
+
+        if !changed {
+            return rename_map;
+        }
+    }
 }
 
-/// Walk the JSON tree and rewrite any `$ref` value found in `rename_map`.
+/// Walk the JSON tree and rewrite any `$ref` that points at (or into) a
+/// component found in `rename_map`.
 fn rewrite_refs(value: &mut Value, rename_map: &HashMap<String, String>) {
     match value {
         Value::Object(map) => {
-            // Check for $ref to rewrite
             let new_ref = map
                 .get("$ref")
                 .and_then(|v| v.as_str())
-                .and_then(|s| rename_map.get(s))
-                .cloned();
+                .and_then(|s| renamed_ref(s, rename_map));
 
             if let Some(new_ref) = new_ref {
                 map.insert("$ref".into(), Value::String(new_ref));
@@ -333,46 +503,86 @@ fn rewrite_refs(value: &mut Value, rename_map: &HashMap<String, String>) {
     }
 }
 
-fn merge_paths(
+/// `#/components/schemas/Pet/properties/id` → `#/components/schemas/b_Pet/properties/id`
+fn renamed_ref(reference: &str, rename_map: &HashMap<String, String>) -> Option<String> {
+    let component_end = reference
+        .match_indices('/')
+        .nth(3)
+        .map_or(reference.len(), |(idx, _)| idx);
+    let (component, rest) = reference.split_at(component_end);
+    rename_map
+        .get(component)
+        .map(|new_ref| format!("{new_ref}{rest}"))
+}
+
+/// Fields of `incoming` that `existing` also defines with a different value.
+fn conflicting_fields(existing: &Value, incoming: &Value) -> Vec<String> {
+    match (existing.as_object(), incoming.as_object()) {
+        (Some(existing), Some(incoming)) => incoming
+            .iter()
+            .filter(|(key, value)| existing.get(*key).is_some_and(|e| e != *value))
+            .map(|(key, _)| key.clone())
+            .collect(),
+        _ if existing != incoming => vec!["entire item".into()],
+        _ => Vec::new(),
+    }
+}
+
+/// Merge a map of Path Item objects (`paths` or `webhooks`) into `merged`.
+///
+/// Items under the same key are combined field by field (e.g. `GET` from one
+/// source and `POST` from another). Only fields that both define with
+/// different values are conflicts, resolved according to `strategy`.
+fn merge_path_items(
     source_name: &str,
-    spec: &Value,
+    kind: &str,
+    items: Option<&Value>,
     merged: &mut Map<String, Value>,
-    config: &MergeConfig,
+    strategy: &ConflictStrategy,
+    key_for: impl Fn(&str) -> String,
+    renamed_key: impl Fn(&str, usize) -> String,
 ) -> Result<(), Error> {
-    let spec_paths = match spec.get("paths").and_then(|p| p.as_object()) {
-        Some(p) => p,
-        None => return Ok(()),
+    let Some(items) = items.and_then(Value::as_object) else {
+        return Ok(());
     };
 
-    for (path, operations) in spec_paths {
-        let key = if config.prefix_paths {
-            format!("/{source_name}{path}")
-        } else {
-            path.clone()
+    for (name, item) in items {
+        let key = key_for(name);
+        let Some(existing) = merged.get_mut(&key) else {
+            merged.insert(key, item.clone());
+            continue;
         };
 
-        if merged.contains_key(&key) {
-            match config.conflict_strategy {
-                ConflictStrategy::Error => {
-                    return Err(Error::MergeConflict(format!(
-                        "duplicate path '{key}' from source '{source_name}'"
-                    )));
-                }
-                ConflictStrategy::Overwrite => {
-                    merged.insert(key, operations.clone());
-                }
-                ConflictStrategy::Rename => {
-                    let mut renamed_path = format!("/{source_name}{path}");
-                    let mut suffix = 2;
-                    while merged.contains_key(&renamed_path) {
-                        renamed_path = format!("/{source_name}_{suffix}{path}");
-                        suffix += 1;
+        let conflicts = conflicting_fields(existing, item);
+        if conflicts.is_empty() || *strategy == ConflictStrategy::Overwrite {
+            match (existing.as_object_mut(), item.as_object()) {
+                (Some(existing), Some(item)) => {
+                    for (field, value) in item {
+                        existing.insert(field.clone(), value.clone());
                     }
-                    merged.insert(renamed_path, operations.clone());
                 }
+                _ => *existing = item.clone(),
             }
-        } else {
-            merged.insert(key, operations.clone());
+            continue;
+        }
+
+        match strategy {
+            ConflictStrategy::Error => {
+                return Err(Error::MergeConflict(format!(
+                    "duplicate {kind} '{key}' (conflicting: {}) from source '{source_name}'",
+                    conflicts.join(", ")
+                )));
+            }
+            ConflictStrategy::Rename => {
+                let mut n = 1;
+                let mut renamed = renamed_key(name, n);
+                while merged.contains_key(&renamed) {
+                    n += 1;
+                    renamed = renamed_key(name, n);
+                }
+                merged.insert(renamed, item.clone());
+            }
+            ConflictStrategy::Overwrite => unreachable!("handled above"),
         }
     }
 
@@ -383,48 +593,48 @@ fn merge_components(
     source_name: &str,
     spec: &Value,
     merged: &mut HashMap<String, Map<String, Value>>,
+    extras: &mut Map<String, Value>,
     rename_map: &HashMap<String, String>,
     config: &MergeConfig,
 ) -> Result<(), Error> {
-    for &ctype in COMPONENT_TYPES {
-        let items = match spec
-            .get("components")
-            .and_then(|c| c.get(ctype))
-            .and_then(|v| v.as_object())
-        {
-            Some(items) => items,
-            None => continue,
+    let Some(components) = spec.get("components").and_then(Value::as_object) else {
+        return Ok(());
+    };
+
+    for (ctype, items) in components {
+        // Vendor extensions and unknown keys under `components` are deep-merged as-is.
+        if !COMPONENT_TYPES.contains(&ctype.as_str()) {
+            match extras.get_mut(ctype) {
+                Some(existing) => deep_merge(existing, items),
+                None => {
+                    extras.insert(ctype.clone(), items.clone());
+                }
+            }
+            continue;
+        }
+        let Some(items) = items.as_object() else {
+            continue;
         };
 
-        let merged_type = merged.entry(ctype.into()).or_default();
+        let merged_type = merged.entry(ctype.clone()).or_default();
 
         for (item_name, item_value) in items {
-            // Determine the key to insert under (may have been renamed)
-            let old_ref = format!("#/components/{ctype}/{item_name}");
-            let insert_name = if let Some(new_ref) = rename_map.get(&old_ref) {
-                // Extract the new component name from the new $ref
-                new_ref.rsplit('/').next().unwrap_or(item_name).to_string()
-            } else {
-                item_name.clone()
-            };
+            if let Some(new_ref) = rename_map.get(&component_ref(ctype, item_name)) {
+                let new_name = new_ref.rsplit('/').next().unwrap_or(item_name);
+                merged_type.insert(new_name.to_string(), item_value.clone());
+                continue;
+            }
 
-            if merged_type.contains_key(&insert_name) && rename_map.get(&old_ref).is_none() {
-                match config.conflict_strategy {
-                    ConflictStrategy::Error => {
-                        return Err(Error::MergeConflict(format!(
-                            "duplicate component {ctype}/{item_name} from source '{source_name}'"
-                        )));
-                    }
-                    ConflictStrategy::Overwrite => {
-                        merged_type.insert(insert_name, item_value.clone());
-                    }
-                    ConflictStrategy::Rename => {
-                        // Already handled via rename_map – should not reach here
-                        merged_type.insert(insert_name, item_value.clone());
-                    }
+            match merged_type.get(item_name) {
+                Some(existing) if existing == item_value => {}
+                Some(_) if config.conflict_strategy == ConflictStrategy::Error => {
+                    return Err(Error::MergeConflict(format!(
+                        "duplicate component {ctype}/{item_name} from source '{source_name}'"
+                    )));
                 }
-            } else {
-                merged_type.insert(insert_name, item_value.clone());
+                _ => {
+                    merged_type.insert(item_name.clone(), item_value.clone());
+                }
             }
         }
     }
@@ -500,9 +710,11 @@ mod tests {
 
     #[test]
     fn merge_conflict_error_strategy() {
+        let mut alt = petstore_spec();
+        alt["paths"]["/pets"]["get"]["summary"] = json!("Different");
         let specs = vec![
             ("a".into(), "a".into(), petstore_spec()),
-            ("b".into(), "b".into(), petstore_spec()),
+            ("b".into(), "b".into(), alt),
         ];
         let config = MergeConfig::default(); // Error strategy
         let result = merge_specs(specs, &config);
@@ -551,9 +763,12 @@ mod tests {
         let mut first = petstore_spec();
         first["paths"]["/b/pets"] = json!({"get": {"summary": "Existing"}});
 
+        let mut second = petstore_spec();
+        second["paths"]["/pets"]["get"]["summary"] = json!("List b pets");
+
         let specs = vec![
             ("a".into(), "a".into(), first),
-            ("b".into(), "b".into(), petstore_spec()),
+            ("b".into(), "b".into(), second),
         ];
         let config = MergeConfig {
             conflict_strategy: ConflictStrategy::Rename,
@@ -562,7 +777,10 @@ mod tests {
         let merged = merge_specs(specs, &config).unwrap();
 
         assert_eq!(merged["paths"]["/b/pets"]["get"]["summary"], "Existing");
-        assert_eq!(merged["paths"]["/b_2/pets"]["get"]["summary"], "List pets");
+        assert_eq!(
+            merged["paths"]["/b_2/pets"]["get"]["summary"],
+            "List b pets"
+        );
     }
 
     #[test]
@@ -825,6 +1043,298 @@ mod tests {
 
         assert_eq!(merged["tags"][0]["name"], "pets");
         assert_eq!(merged["paths"]["/pets"]["get"]["tags"][0], "pets");
+    }
+
+    fn spec_with(paths: Value, components: Value) -> Value {
+        json!({
+            "openapi": "3.0.3",
+            "info": { "title": "T", "version": "1" },
+            "paths": paths,
+            "components": components
+        })
+    }
+
+    #[test]
+    fn components_are_emitted_in_canonical_order() {
+        let mut components = Map::new();
+        for &ctype in COMPONENT_TYPES.iter().rev() {
+            components.insert(ctype.into(), json!({ "X": {} }));
+        }
+        let spec = spec_with(json!({}), Value::Object(components));
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), spec)],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+
+        let keys: Vec<&str> = merged["components"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, COMPONENT_TYPES);
+    }
+
+    #[test]
+    fn rename_does_not_clobber_existing_renamed_name() {
+        let a = spec_with(
+            json!({}),
+            json!({ "schemas": {
+                "Pet": { "description": "a pet" },
+                "b_Pet": { "description": "a's own b_Pet" }
+            }}),
+        );
+        let b = spec_with(
+            json!({ "/b-pets": { "get": { "responses": { "200": {
+                "description": "ok",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } } }
+            }}}}}),
+            json!({ "schemas": { "Pet": { "description": "b pet" } } }),
+        );
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        };
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &config,
+        )
+        .unwrap();
+
+        let schemas = &merged["components"]["schemas"];
+        assert_eq!(schemas["b_Pet"]["description"], "a's own b_Pet");
+        assert_eq!(schemas["b_2_Pet"]["description"], "b pet");
+        assert_eq!(
+            merged["paths"]["/b-pets"]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/b_2_Pet"
+        );
+    }
+
+    #[test]
+    fn disjoint_methods_on_same_path_are_combined() {
+        let a = spec_with(
+            json!({ "/pets": { "get": { "summary": "list" } } }),
+            json!({}),
+        );
+        let b = spec_with(
+            json!({ "/pets": { "post": { "summary": "create" } } }),
+            json!({}),
+        );
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(merged["paths"]["/pets"]["get"]["summary"], "list");
+        assert_eq!(merged["paths"]["/pets"]["post"]["summary"], "create");
+    }
+
+    #[test]
+    fn same_method_on_same_path_conflicts() {
+        let a = spec_with(
+            json!({ "/pets": { "get": { "summary": "list" } } }),
+            json!({}),
+        );
+        let b = spec_with(
+            json!({ "/pets": { "get": { "summary": "other" } } }),
+            json!({}),
+        );
+
+        let err = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &MergeConfig::default(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("duplicate path '/pets'"), "{err}");
+        assert!(err.contains("get"), "{err}");
+    }
+
+    #[test]
+    fn identical_operations_are_not_conflicts() {
+        let health = json!({ "/health": { "get": { "summary": "health" } } });
+        let a = spec_with(health.clone(), json!({}));
+        let b = spec_with(health, json!({}));
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(merged["paths"]["/health"]["get"]["summary"], "health");
+    }
+
+    #[test]
+    fn identical_components_are_not_conflicts() {
+        let auth =
+            json!({ "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } } });
+        let a = spec_with(json!({}), auth.clone());
+        let b = spec_with(json!({}), auth);
+
+        for strategy in [ConflictStrategy::Error, ConflictStrategy::Rename] {
+            let config = MergeConfig {
+                conflict_strategy: strategy,
+                ..Default::default()
+            };
+            let merged = merge_specs(
+                vec![
+                    ("a".into(), "a".into(), a.clone()),
+                    ("b".into(), "b".into(), b.clone()),
+                ],
+                &config,
+            )
+            .unwrap();
+            let schemes = merged["components"]["securitySchemes"].as_object().unwrap();
+            assert_eq!(schemes.keys().collect::<Vec<_>>(), ["bearer"]);
+        }
+    }
+
+    #[test]
+    fn identical_component_with_renamed_dependency_is_renamed() {
+        let error = json!({ "properties": { "code": { "$ref": "#/components/schemas/Code" } } });
+        let a = spec_with(
+            json!({}),
+            json!({ "schemas": { "Error": error.clone(), "Code": { "type": "integer" } } }),
+        );
+        let b = spec_with(
+            json!({ "/b": { "get": { "responses": { "default": {
+                "description": "err",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            }}}}}),
+            json!({ "schemas": { "Error": error, "Code": { "type": "string" } } }),
+        );
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        };
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &config,
+        )
+        .unwrap();
+
+        let schemas = &merged["components"]["schemas"];
+        assert_eq!(schemas["b_Code"]["type"], "string");
+        assert_eq!(
+            schemas["b_Error"]["properties"]["code"]["$ref"],
+            "#/components/schemas/b_Code"
+        );
+        assert_eq!(
+            merged["paths"]["/b"]["get"]["responses"]["default"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/b_Error"
+        );
+    }
+
+    #[test]
+    fn source_names_are_sanitized_in_paths_and_component_names() {
+        let a = spec_with(
+            json!({}),
+            json!({ "schemas": { "Pet": { "type": "object" } } }),
+        );
+        let b = spec_with(
+            json!({ "/pets": { "get": { "summary": "list" } } }),
+            json!({ "schemas": { "Pet": { "type": "string" } } }),
+        );
+        let config = MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            prefix_paths: true,
+            ..Default::default()
+        };
+        let merged = merge_specs(
+            vec![
+                ("a".into(), "a".into(), a),
+                ("my api".into(), "my api".into(), b),
+            ],
+            &config,
+        )
+        .unwrap();
+
+        assert!(merged["paths"]["/my_api/pets"].is_object());
+        assert!(merged["components"]["schemas"]["my_api_Pet"].is_object());
+    }
+
+    #[test]
+    fn webhooks_are_merged_with_conflict_detection() {
+        let mut a = spec_with(json!({}), json!({}));
+        a["webhooks"] = json!({ "petCreated": { "post": { "summary": "a" } } });
+        let mut b = spec_with(json!({}), json!({}));
+        b["webhooks"] = json!({ "userCreated": { "post": { "summary": "b" } } });
+        let mut c = spec_with(json!({}), json!({}));
+        c["webhooks"] = json!({ "petCreated": { "post": { "summary": "c" } } });
+
+        let merged = merge_specs(
+            vec![
+                ("a".into(), "a".into(), a.clone()),
+                ("b".into(), "b".into(), b),
+            ],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+        assert!(merged["webhooks"]["petCreated"].is_object());
+        assert!(merged["webhooks"]["userCreated"].is_object());
+
+        let err = merge_specs(
+            vec![("a".into(), "a".into(), a), ("c".into(), "c".into(), c)],
+            &MergeConfig::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("petCreated"), "{err}");
+    }
+
+    #[test]
+    fn top_level_security_is_unioned() {
+        let mut a = spec_with(json!({}), json!({}));
+        a["security"] = json!([{ "bearer": [] }]);
+        let mut b = spec_with(json!({}), json!({}));
+        b["security"] = json!([{ "apiKey": [] }, { "bearer": [] }]);
+
+        let merged = merge_specs(
+            vec![("a".into(), "a".into(), a), ("b".into(), "b".into(), b)],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            merged["security"],
+            json!([{ "bearer": [] }, { "apiKey": [] }])
+        );
+    }
+
+    #[test]
+    fn mixed_openapi_minor_versions_produce_warning() {
+        let a = spec_with(json!({}), json!({}));
+        let mut b = spec_with(json!({}), json!({}));
+        b["openapi"] = json!("3.1.0");
+        let mut c = spec_with(json!({}), json!({}));
+        c["openapi"] = json!("3.0.1");
+
+        let report = merge_specs_with_report(
+            vec![
+                ("a".into(), "a".into(), a.clone()),
+                ("b".into(), "b".into(), b),
+            ],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(report.spec["openapi"], "3.0.3");
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("3.1.0"));
+
+        let report = merge_specs_with_report(
+            vec![("a".into(), "a".into(), a), ("c".into(), "c".into(), c)],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+        assert!(report.warnings.is_empty());
     }
 
     #[test]
