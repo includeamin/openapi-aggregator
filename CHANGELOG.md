@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-10-01
+
+### Features
+
+- *(web)* Redesign playground as a three-pane workbench
+- *(web)* Add SEO metadata, social preview image and sitemap
+
 ## [0.7.0] - 2026-10-01
 
 ### Bug Fixes
