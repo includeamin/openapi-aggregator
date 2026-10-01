@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 /// Top-level configuration for the aggregator.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub sources: Vec<Source>,
     #[serde(default)]
@@ -13,12 +14,23 @@ pub struct Config {
     pub merge: MergeConfig,
 }
 
+impl Config {
+    /// Parse a YAML (or JSON) config document.
+    pub fn from_yaml(text: &str) -> Result<Self, crate::error::Error> {
+        serde_yaml::from_str(text)
+            .map_err(|e| crate::error::Error::Config(format!("failed to parse config file: {e}")))
+    }
+}
+
 /// A source of an OpenAPI specification.
 ///
 /// Detected automatically: if `url` is present it is treated as an HTTP source,
-/// otherwise `path` is used as a local file source.
+/// if `path` is present it is a local file source. Exactly one must be set.
+///
+/// In HTTP sources, `${ENV_VAR}` placeholders in `url` and header values are
+/// replaced with environment variables when the source is loaded.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
+#[serde(untagged, try_from = "RawSource")]
 pub enum Source {
     Http {
         name: Option<String>,
@@ -44,11 +56,78 @@ pub enum Source {
     },
 }
 
+/// Flat representation of a source, used to give precise errors
+/// before deciding which [`Source`] variant it is.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSource {
+    name: Option<String>,
+    url: Option<String>,
+    path: Option<PathBuf>,
+    headers: Option<HashMap<String, String>>,
+    tag_prefix: Option<String>,
+    additional_blocks: Option<Value>,
+}
+
+impl TryFrom<RawSource> for Source {
+    type Error = String;
+
+    fn try_from(raw: RawSource) -> Result<Self, Self::Error> {
+        let label = raw
+            .name
+            .as_deref()
+            .map(|n| format!("source '{n}'"))
+            .unwrap_or_else(|| "source".into());
+        match (raw.url, raw.path) {
+            (Some(url), None) => Ok(Source::Http {
+                name: raw.name,
+                url,
+                headers: raw.headers.unwrap_or_default(),
+                tag_prefix: raw.tag_prefix,
+                additional_blocks: raw.additional_blocks,
+            }),
+            (None, Some(path)) => {
+                if raw.headers.is_some() {
+                    return Err(format!(
+                        "{label}: 'headers' is only supported for 'url' sources"
+                    ));
+                }
+                Ok(Source::File {
+                    name: raw.name,
+                    path,
+                    tag_prefix: raw.tag_prefix,
+                    additional_blocks: raw.additional_blocks,
+                })
+            }
+            (Some(_), Some(_)) => Err(format!(
+                "{label} has both 'path' and 'url'; set exactly one"
+            )),
+            (None, None) => Err(format!("{label} needs either 'path' or 'url'")),
+        }
+    }
+}
+
+/// Extract the host from a URL, e.g. `https://user@api.test:8443/x` → `api.test`.
+fn url_host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match host_port.strip_prefix('[') {
+        Some(ipv6) => ipv6.split(']').next()?,
+        None => host_port.split(':').next()?,
+    };
+    (!host.is_empty()).then_some(host)
+}
+
 impl Source {
-    /// Return the user-provided name or derive one from the url / filename.
+    /// Return the user-provided name or derive one from the url host / filename.
     pub fn display_name(&self) -> String {
         match self {
-            Source::Http { name, url, .. } => name.clone().unwrap_or_else(|| url.clone()),
+            Source::Http { name, url, .. } => name.clone().unwrap_or_else(|| {
+                url_host(url)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| url.clone())
+            }),
             Source::File { name, path, .. } => name.clone().unwrap_or_else(|| {
                 path.file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
@@ -69,6 +148,7 @@ impl Source {
 
 /// Output configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     #[serde(default)]
     pub format: OutputFormat,
@@ -93,6 +173,7 @@ pub enum OutputFormat {
 
 /// Options that control how specs are merged.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MergeConfig {
     /// Strategy for handling duplicate paths or component names.
     #[serde(default)]
@@ -163,6 +244,7 @@ pub enum ConflictStrategy {
 
 /// Values used to override the top-level `info` object.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct InfoOverride {
     pub title: Option<String>,
     pub version: Option<String>,
@@ -171,6 +253,7 @@ pub struct InfoOverride {
 
 /// A server entry for the merged spec.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerEntry {
     pub url: String,
     pub description: Option<String>,
@@ -178,7 +261,80 @@ pub struct ServerEntry {
 
 /// A tag entry for the merged spec.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TagEntry {
     pub name: String,
     pub description: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> Result<Config, String> {
+        serde_yaml::from_str(yaml).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn unknown_merge_field_is_rejected() {
+        let err = parse("sources: []\nmerge:\n  conflict_stratgy: rename\n").unwrap_err();
+        assert!(err.contains("conflict_stratgy"), "{err}");
+    }
+
+    #[test]
+    fn unknown_source_field_is_rejected() {
+        let err = parse("sources:\n  - path: a.yaml\n    header: {}\n").unwrap_err();
+        assert!(err.contains("header"), "{err}");
+    }
+
+    #[test]
+    fn source_needs_path_or_url() {
+        let err = parse("sources:\n  - name: x\n").unwrap_err();
+        assert!(err.contains("either 'path' or 'url'"), "{err}");
+    }
+
+    #[test]
+    fn source_cannot_have_both_path_and_url() {
+        let err = parse("sources:\n  - path: a.yaml\n    url: https://x.test/a\n").unwrap_err();
+        assert!(err.contains("both 'path' and 'url'"), "{err}");
+    }
+
+    #[test]
+    fn file_source_cannot_have_headers() {
+        let err = parse("sources:\n  - path: a.yaml\n    headers: {A: b}\n").unwrap_err();
+        assert!(err.contains("headers"), "{err}");
+    }
+
+    #[test]
+    fn sources_parse_into_variants() {
+        let config =
+            parse("sources:\n  - path: a.yaml\n  - url: https://x.test/a\n    headers: {A: b}\n")
+                .unwrap();
+        assert!(matches!(config.sources[0], Source::File { .. }));
+        assert!(matches!(&config.sources[1], Source::Http { headers, .. } if headers["A"] == "b"));
+    }
+
+    #[test]
+    fn from_yaml_wraps_errors_as_config_errors() {
+        let err = Config::from_yaml("sources: [{name: x}]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("configuration error: failed to parse config file:"),
+            "{err}"
+        );
+        assert!(err.contains("either 'path' or 'url'"), "{err}");
+    }
+
+    #[test]
+    fn http_source_default_name_is_host() {
+        let source = Source::Http {
+            name: None,
+            url: "https://billing.example.com:8443/v1/openapi.json".into(),
+            headers: HashMap::new(),
+            tag_prefix: None,
+            additional_blocks: None,
+        };
+        assert_eq!(source.display_name(), "billing.example.com");
+    }
 }

@@ -1,0 +1,12 @@
+[package]
+name = "openapi-aggregator-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure merge logic for openapi-aggregator (no I/O, wasm-compatible)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true

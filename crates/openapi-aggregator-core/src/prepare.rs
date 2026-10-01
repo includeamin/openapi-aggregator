@@ -1,54 +1,16 @@
 use serde_json::Value;
-use std::time::Duration;
 
 use crate::config::Source;
 use crate::error::Error;
+use crate::merge::deep_merge;
 
-/// Load an OpenAPI spec from a [`Source`], returning `(name, parsed_value)`.
-pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
-    match source {
-        Source::File { path, .. } => {
-            let content = std::fs::read_to_string(path).map_err(|e| Error::FileRead {
-                path: path.display().to_string(),
-                source: e,
-            })?;
-            let value = parse_and_prepare(&content, source)?;
-            validate_openapi(&value, &source.display_name())?;
-            Ok((source.display_name(), value))
-        }
-        Source::Http { url, headers, .. } => {
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .map_err(|e| Error::HttpRequest {
-                    url: url.clone(),
-                    source: e,
-                })?;
-            let mut request = client.get(url);
-            for (key, value) in headers {
-                request = request.header(key, value);
-            }
-            let response = request
-                .send()
-                .await
-                .map_err(|e| Error::HttpRequest {
-                    url: url.clone(),
-                    source: e,
-                })?
-                .error_for_status()
-                .map_err(|e| Error::HttpRequest {
-                    url: url.clone(),
-                    source: e,
-                })?;
-            let content = response.text().await.map_err(|e| Error::HttpRequest {
-                url: url.clone(),
-                source: e,
-            })?;
-            let value = parse_and_prepare(&content, source)?;
-            validate_openapi(&value, &source.display_name())?;
-            Ok((source.display_name(), value))
-        }
-    }
+/// Parse spec text, apply the source's `additional_blocks` and validate it.
+/// Returns `(display_name, spec)`.
+pub fn prepare_source(content: &str, source: &Source) -> Result<(String, Value), Error> {
+    let name = source.display_name();
+    let value = parse_and_prepare(content, source)?;
+    validate_openapi(&value, &name)?;
+    Ok((name, value))
 }
 
 fn parse_and_prepare(content: &str, source: &Source) -> Result<Value, Error> {
@@ -76,25 +38,8 @@ fn source_additional_blocks(source: &Source) -> Option<&Value> {
     }
 }
 
-fn deep_merge(target: &mut Value, patch: &Value) {
-    match (target, patch) {
-        (Value::Object(target_map), Value::Object(patch_map)) => {
-            for (key, patch_value) in patch_map {
-                if let Some(existing) = target_map.get_mut(key) {
-                    deep_merge(existing, patch_value);
-                } else {
-                    target_map.insert(key.clone(), patch_value.clone());
-                }
-            }
-        }
-        (target_slot, patch_value) => {
-            *target_slot = patch_value.clone();
-        }
-    }
-}
-
 /// Try JSON first, fall back to YAML.
-fn parse_content(content: &str) -> Result<Value, Error> {
+pub fn parse_content(content: &str) -> Result<Value, Error> {
     serde_json::from_str(content).or_else(|_| {
         serde_yaml::from_str::<Value>(content)
             .map_err(|e| Error::Parse(format!("content is neither valid JSON nor YAML: {e}")))
@@ -108,6 +53,10 @@ fn validate_openapi(value: &Value, source_name: &str) -> Result<(), Error> {
         Some(v) => Err(Error::InvalidSpec {
             name: source_name.into(),
             reason: format!("unsupported OpenAPI version '{v}' (only 3.x is supported)"),
+        }),
+        None if value.get("swagger").is_some() => Err(Error::InvalidSpec {
+            name: source_name.into(),
+            reason: "Swagger 2.0 specs are not supported (only OpenAPI 3.x is supported)".into(),
         }),
         None => Err(Error::InvalidSpec {
             name: source_name.into(),
@@ -183,6 +132,38 @@ mod tests {
             merged["paths"]["/pets"]["get"]["x-vendor-extension"]["timeout"],
             3000
         );
+    }
+
+    #[test]
+    fn prepare_source_applies_blocks_validates_and_names() {
+        let source = Source::File {
+            name: Some("pets".into()),
+            path: PathBuf::from("ignored.yaml"),
+            tag_prefix: None,
+            additional_blocks: Some(json!({ "x-team": "core" })),
+        };
+        let (name, spec) = prepare_source(
+            r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#,
+            &source,
+        )
+        .unwrap();
+        assert_eq!(name, "pets");
+        assert_eq!(spec["x-team"], "core");
+    }
+
+    #[test]
+    fn prepare_source_rejects_non_openapi_with_source_name() {
+        let source = Source::File {
+            name: Some("legacy".into()),
+            path: PathBuf::from("ignored.yaml"),
+            tag_prefix: None,
+            additional_blocks: None,
+        };
+        let err = prepare_source("swagger: '2.0'\ninfo: {title: T, version: '1'}\n", &source)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("legacy"), "{err}");
+        assert!(err.contains("Swagger 2.0") && err.contains("3.x"), "{err}");
     }
 
     #[test]

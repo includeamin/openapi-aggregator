@@ -4,6 +4,8 @@ Aggregate and merge OpenAPI 3.x specifications from multiple sources into a sing
 
 Available as both a **Rust library** and a **CLI tool**.
 
+**Try it in your browser:** the [playground](https://includeamin.github.io/openapi-aggregator/) runs the same merge engine compiled to WebAssembly. Add specs, edit the config, and share the result as a link.
+
 ## Features
 
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
@@ -38,7 +40,7 @@ curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main
 ### From source
 
 ```sh
-cargo install --path .
+cargo install --path crates/openapi-aggregator
 ```
 
 ### Pre-built binaries
@@ -104,6 +106,23 @@ Sources are detected automatically by their fields:
 - If `url` is present → HTTP source
 - If `path` is present → file source (YAML or JSON auto-detected from content)
 
+Exactly one of `url` / `path` must be set, and unknown keys anywhere in the config are rejected, so typos like `conflict_stratgy` fail loudly instead of being ignored.
+
+An HTTP source without a `name` is named after its URL host (e.g. `billing.example.com`).
+
+### Environment variables
+
+`${VAR}` placeholders in an HTTP source's `url` and `headers` values are replaced with environment variables at load time, so secrets don't have to live in the config file:
+
+```yaml
+  - name: billing
+    url: https://billing.example.com/openapi.json
+    headers:
+      Authorization: "Bearer ${BILLING_TOKEN}"
+```
+
+A referenced variable that is not set is an error.
+
 ### Additional source blocks
 
 Each source can define `additional_blocks` as any YAML/JSON object. It is deep-merged into that source document before merge, so you can inject vendor extensions (for example API gateway related `x-...` blocks) or other custom OpenAPI fragments without adding provider-specific fields.
@@ -159,15 +178,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Merge Behaviour
 
-| Strategy    | Duplicate paths                        | Duplicate components                     |
-|-------------|----------------------------------------|------------------------------------------|
-| `error`     | Fail immediately                       | Fail immediately                         |
-| `overwrite` | Last source wins                       | Last source wins                         |
-| `rename`    | Prefix path with `/{source_name}`      | Rename to `{source_name}_{component}`    |
+Only real conflicts trigger the conflict strategy:
+
+- **Paths are merged per operation.** `GET /users` from one source and `POST /users` from another end up under the same path. A conflict is the same operation (or path-level field) defined differently.
+- **Identical definitions are shared.** Two sources defining the same `bearerAuth` scheme or `Error` schema produce one copy, not a conflict.
+
+| Strategy    | Conflicting paths / webhooks             | Conflicting components                   |
+|-------------|------------------------------------------|------------------------------------------|
+| `error`     | Fail immediately                         | Fail immediately                         |
+| `overwrite` | Last source wins (per operation)         | Last source wins                         |
+| `rename`    | Move the source's path to `/{source_name}{path}` | Rename to `{source_name}_{component}` |
 
 When `prefix_paths: true`, **all** paths are prefixed regardless of conflicts.
 
-When using `rename`, any `$ref` pointing to a renamed component is rewritten automatically.
+When using `rename`, any `$ref` pointing to a renamed component is rewritten automatically, and renamed names never overwrite an existing one (`b_2_Pet` is used if `b_Pet` is taken). Source names are sanitised (`my api` → `my_api`) wherever they become part of a path or component name.
+
+Other top-level fields:
+
+- `webhooks` (OpenAPI 3.1) are merged like paths.
+- Top-level `security` stays top-level only when every source declares the same requirements. Otherwise each source's requirements are copied onto its own operations, so no operation gains or loses authentication. Renamed security schemes and `discriminator.mapping` entries are updated along with `$ref`s.
+- The merged `openapi` version comes from the first source. The CLI prints a warning when sources use different `major.minor` versions (also available via `aggregate_with_report`).
+- Component types are always emitted in the same order, so the output is stable across runs.
 
 ## Development
 
@@ -180,6 +211,17 @@ cargo clippy --all-targets -- -D warnings
 
 # Format
 cargo fmt
+```
+
+### Web playground
+
+```sh
+cd web
+npm ci
+npm run wasm     # build the WASM engine (needs wasm-pack + wasm32-unknown-unknown target)
+npm run dev      # http://localhost:5173/openapi-aggregator/
+npm test         # unit tests
+npm run e2e      # Playwright smoke test
 ```
 
 ## License

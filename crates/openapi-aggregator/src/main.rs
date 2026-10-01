@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use openapi_aggregator::{aggregate_from_file, OutputFormat};
+use openapi_aggregator::{aggregate_with_report, load_config, OutputFormat};
 
 #[derive(Parser)]
 #[command(name = "openapi-aggregator")]
@@ -42,12 +42,16 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let merged = aggregate_from_file(&cli.config).await?;
+    let config = load_config(&cli.config)?;
+    let report = aggregate_with_report(&config).await?;
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
 
-    let format = cli.format.unwrap_or(OutputFormat::Yaml);
+    let format = cli.format.unwrap_or(config.output.format);
     let text = match format {
-        OutputFormat::Yaml => serde_yaml::to_string(&merged)?,
-        OutputFormat::Json => serde_json::to_string_pretty(&merged)?,
+        OutputFormat::Yaml => serde_yaml::to_string(&report.spec)?,
+        OutputFormat::Json => serde_json::to_string_pretty(&report.spec)? + "\n",
     };
 
     match cli.output {

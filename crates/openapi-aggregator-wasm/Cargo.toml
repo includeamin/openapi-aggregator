@@ -1,0 +1,17 @@
+[package]
+name = "openapi-aggregator-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openapi-aggregator-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
