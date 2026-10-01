@@ -121,7 +121,7 @@ jobs:
         if: steps.skip_check.outputs.skip != 'true'
         run: |
           sed -i "0,/^version = .*/s//version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
-          cargo check --quiet 2>/dev/null || true  # regenerate Cargo.lock if present
+          cargo update --workspace  # sync the package version in Cargo.lock
 
       - name: Install git-cliff
         if: steps.skip_check.outputs.skip != 'true'
@@ -147,7 +147,7 @@ jobs:
       - name: Commit version bump & changelog
         if: steps.skip_check.outputs.skip != 'true'
         run: |
-          git add Cargo.toml CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
           git push
 
@@ -159,7 +159,9 @@ jobs:
 
       - name: Write release notes to file
         if: steps.skip_check.outputs.skip != 'true'
-        run: echo '${{ steps.release_notes.outputs.content }}' > /tmp/release_notes.md
+        env:
+          RELEASE_NOTES: ${{ steps.release_notes.outputs.content }}
+        run: printf '%s\n' "$RELEASE_NOTES" > /tmp/release_notes.md
 
       - name: Upload release notes
         if: steps.skip_check.outputs.skip != 'true'
