@@ -3,7 +3,12 @@ name = "openapi-aggregator-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["openapi", "swagger", "merge", "aggregator", "wasm"]
+categories = ["development-tools", "web-programming", "parser-implementations"]
 description = "Pure merge logic for openapi-aggregator (no I/O, wasm-compatible)"
+readme = "../../README.md"
 
 [dependencies]
 serde.workspace = true

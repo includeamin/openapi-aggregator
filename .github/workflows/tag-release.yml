@@ -121,6 +121,8 @@ jobs:
         if: steps.skip_check.outputs.skip != 'true'
         run: |
           sed -i "0,/^version = .*/s//version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
+          # keep the core crate's published version requirement in sync
+          sed -i "s|\(openapi-aggregator-core = {.*version = \)\"[^\"]*\"|\1\"${{ steps.version.outputs.version }}\"|" Cargo.toml
           cargo update --workspace  # sync the package version in Cargo.lock
 
       - name: Install git-cliff
