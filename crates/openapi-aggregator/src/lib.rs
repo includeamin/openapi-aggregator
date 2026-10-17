@@ -1,3 +1,11 @@
+//! Aggregate and merge OpenAPI 3.x specifications from multiple sources (local files and
+//! HTTP endpoints) into a single spec.
+//!
+//! See [`aggregate`] to load and merge the sources of a [`Config`]. The pure merge logic lives
+//! in [`openapi_aggregator_core`] and is re-exported here.
+//!
+//! The crate also ships the `openapi-aggregator` command-line tool.
+
 pub mod error;
 pub mod source;
 

@@ -3,6 +3,10 @@ name = "openapi-aggregator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["openapi", "swagger", "merge", "aggregator", "cli"]
+categories = ["development-tools", "command-line-utilities", "web-programming"]
 description = "Aggregate and merge OpenAPI specifications from multiple sources"
 readme = "../../README.md"
 

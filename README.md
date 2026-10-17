@@ -139,8 +139,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Source::File {
                 name: Some("petstore".into()),
                 path: "./specs/petstore.yaml".into(),
-              additional_blocks: None,
-              tag_prefix: None,
+                additional_blocks: None,
+                tag_prefix: None,
             },
             Source::Http {
                 name: Some("billing".into()),
@@ -148,8 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 headers: [("Authorization".into(), "Bearer token".into())]
                     .into_iter()
                     .collect(),
-              additional_blocks: None,
-              tag_prefix: None,
+                additional_blocks: None,
+                tag_prefix: None,
             },
         ],
         output: Default::default(),
