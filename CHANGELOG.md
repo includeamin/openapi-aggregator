@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-11-21
+
+### Bug Fixes
+
+- *(core)* Satisfy clippy in swagger2 converter
+
+### Features
+
+- *(core)* Convert Swagger 2.0 servers, definitions and refs to OpenAPI 3.0
+- *(core)* Convert Swagger 2.0 parameters and request bodies
+- *(core)* Convert Swagger 2.0 responses and security definitions
+- Accept Swagger 2.0 sources and report conversion notes
+- *(web)* Add Swagger 2.0 playground example and document conversion
+
+### Testing
+
+- *(core)* Cover Swagger Petstore 2.0 conversion
+
 ## [0.9.0] - 2026-10-17
 
 ### Features
