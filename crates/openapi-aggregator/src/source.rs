@@ -62,7 +62,7 @@ pub(crate) async fn load_source_with_client(
 }
 
 /// Replace `${NAME}` placeholders with environment variables.
-fn expand_env(text: &str) -> Result<String, Error> {
+pub(crate) fn expand_env(text: &str) -> Result<String, Error> {
     expand_env_with(text, |name| std::env::var(name).ok())
 }
 

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use openapi_aggregator::{aggregate_with_report, load_config, OutputFormat};
+use openapi_aggregator::{aggregate_with_options, load_config, AggregateOptions, OutputFormat};
 
 #[derive(Parser)]
 #[command(name = "openapi-aggregator")]
@@ -19,6 +19,10 @@ struct Cli {
     /// Output format (overrides config)
     #[arg(short, long, value_parser = parse_format)]
     format: Option<OutputFormat>,
+
+    /// Let external `$ref`s read files outside the config directory
+    #[arg(long)]
+    allow_outside_config_dir: bool,
 }
 
 fn parse_format(s: &str) -> Result<OutputFormat, String> {
@@ -43,7 +47,11 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(&cli.config)?;
-    let report = aggregate_with_report(&config).await?;
+    let options = AggregateOptions {
+        allow_outside_config_dir: cli.allow_outside_config_dir,
+        config_dir: cli.config.parent().map(PathBuf::from),
+    };
+    let report = aggregate_with_options(&config, &options).await?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
     }
@@ -63,4 +71,18 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_allow_outside_config_dir_flag() {
+        let cli =
+            Cli::try_parse_from(["openapi-aggregator", "--allow-outside-config-dir"]).unwrap();
+        assert!(cli.allow_outside_config_dir);
+        let cli = Cli::try_parse_from(["openapi-aggregator"]).unwrap();
+        assert!(!cli.allow_outside_config_dir);
+    }
 }
