@@ -38,6 +38,7 @@
 pub mod bundle;
 pub mod config;
 pub mod error;
+pub mod filter;
 pub mod merge;
 pub mod prepare;
 pub mod swagger2;
