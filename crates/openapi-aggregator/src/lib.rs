@@ -11,9 +11,9 @@ pub mod source;
 
 pub use error::Error;
 pub use openapi_aggregator_core::{
-    config, merge, merge_specs, merge_specs_with_report, parse_content, prepare_source, Config,
-    ConflictStrategy, InfoOverride, MergeConfig, MergeReport, OutputConfig, OutputFormat,
-    ServerEntry, Source, TagEntry, TagPrefixStrategy,
+    config, merge, merge_specs, merge_specs_with_report, parse_content, prepare_source,
+    prepare_source_with_notes, Config, ConflictStrategy, InfoOverride, MergeConfig, MergeReport,
+    OutputConfig, OutputFormat, PreparedSource, ServerEntry, Source, TagEntry, TagPrefixStrategy,
 };
 pub use source::load_source;
 
@@ -39,13 +39,23 @@ pub async fn aggregate_with_report(config: &Config) -> Result<MergeReport, Error
     }
 
     let client = http_client()?;
-    let specs = try_join_all(config.sources.iter().map(|src| async {
-        let (name, spec) = load_source_with_client(src, &client).await?;
-        Ok::<_, Error>((name, src.tag_prefix(), spec))
+    let prepared = try_join_all(config.sources.iter().map(|src| async {
+        let prepared = load_source_with_client(src, &client).await?;
+        Ok::<_, Error>(prepared)
     }))
     .await?;
 
-    Ok(merge_specs_with_report(specs, &config.merge)?)
+    let mut notes = Vec::new();
+    let mut specs = Vec::new();
+    for (src, prepared) in config.sources.iter().zip(prepared) {
+        notes.extend(prepared.notes);
+        specs.push((prepared.name, src.tag_prefix(), prepared.spec));
+    }
+
+    let mut report = merge_specs_with_report(specs, &config.merge)?;
+    notes.append(&mut report.warnings);
+    report.warnings = notes;
+    Ok(report)
 }
 
 /// Read a config file and resolve relative source paths against its directory.

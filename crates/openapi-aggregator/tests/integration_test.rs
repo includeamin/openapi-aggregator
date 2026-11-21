@@ -441,3 +441,58 @@ async fn http_errors_do_not_leak_expanded_env_secrets() {
         "{message}"
     );
 }
+
+fn collect_refs(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                match v {
+                    serde_json::Value::String(s) if k == "$ref" => out.push(s.clone()),
+                    _ => collect_refs(v, out),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_refs(v, out)),
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn swagger2_source_merges_with_openapi3_and_refs_resolve() {
+    let config = Config {
+        sources: vec![
+            Source::File {
+                name: Some("petstore".into()),
+                path: fixtures().join("petstore.yaml"),
+                tag_prefix: None,
+                additional_blocks: None,
+            },
+            Source::File {
+                name: Some("legacy".into()),
+                path: fixtures().join("swagger2.yaml"),
+                tag_prefix: None,
+                additional_blocks: None,
+            },
+        ],
+        output: Default::default(),
+        merge: MergeConfig {
+            conflict_strategy: ConflictStrategy::Rename,
+            ..Default::default()
+        },
+    };
+    let report = aggregate_with_report(&config).await.unwrap();
+    assert_eq!(report.spec["openapi"], "3.0.3");
+    assert!(report.spec["paths"]["/legacy-pets"]["post"]["requestBody"].is_object());
+    assert!(report
+        .warnings
+        .iter()
+        .any(|w| w.contains("source 'legacy': converted from Swagger 2.0")));
+
+    let mut refs = Vec::new();
+    collect_refs(&report.spec, &mut refs);
+    assert!(!refs.is_empty());
+    for r in refs {
+        let pointer = r.trim_start_matches('#');
+        assert!(report.spec.pointer(pointer).is_some(), "dangling $ref {r}");
+    }
+}
