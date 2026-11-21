@@ -1,8 +1,7 @@
 //! Hide operations (e.g. internal endpoints) from a source before it is merged, and prune
 //! the components, security schemes and tags that only those operations used.
 
-// The internal pieces are wired into `filter_spec` by the next step.
-#![allow(dead_code)]
+use std::collections::HashSet;
 
 use serde_json::Value;
 
@@ -195,6 +194,187 @@ fn filter_items(
         }
     }
     removed
+}
+
+/// What a spec uses: reachable components `(section, name)`, security scheme names and tag names.
+#[derive(Default)]
+struct Usage {
+    components: HashSet<(String, String)>,
+    schemes: HashSet<String>,
+    tags: HashSet<String>,
+}
+
+/// `discriminator.mapping` targets are plain strings, not `$ref`s; collect them too.
+fn mapping_targets(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::Object(mapping)) =
+                map.get("discriminator").and_then(|d| d.get("mapping"))
+            {
+                out.extend(mapping.values().filter_map(Value::as_str).map(String::from));
+            }
+            map.values().for_each(|v| mapping_targets(v, out));
+        }
+        Value::Array(items) => items.iter().for_each(|v| mapping_targets(v, out)),
+        _ => {}
+    }
+}
+
+fn security_requirement_names(requirements: &Value, out: &mut HashSet<String>) {
+    for requirement in requirements
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+    {
+        out.extend(requirement.keys().cloned());
+    }
+}
+
+/// Security requirement names: every `security: [{name: [...]}]` array outside `components`.
+fn security_names(value: &Value, out: &mut HashSet<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match child {
+                    Value::Array(reqs)
+                        if key == "security" && reqs.iter().all(Value::is_object) =>
+                    {
+                        for req in reqs.iter().filter_map(Value::as_object) {
+                            out.extend(req.keys().cloned());
+                        }
+                    }
+                    _ => security_names(child, out),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|v| security_names(v, out)),
+        _ => {}
+    }
+}
+
+fn component_of(reference: &str) -> Option<(String, String)> {
+    let segments = crate::bundle::decode_pointer(reference.strip_prefix('#')?);
+    match segments.as_slice() {
+        [c, section, name, ..] if c == "components" => Some((section.clone(), name.clone())),
+        _ => None,
+    }
+}
+
+fn usage(spec: &Value) -> Usage {
+    let mut usage = Usage::default();
+    let Some(root) = spec.as_object() else {
+        return usage;
+    };
+
+    let mut pending: Vec<String> = Vec::new();
+    for (key, value) in root.iter().filter(|(k, _)| *k != "components") {
+        crate::bundle::walk_refs(value, &mut |r| pending.push(r.to_string()));
+        mapping_targets(value, &mut pending);
+        if key == "security" {
+            security_requirement_names(value, &mut usage.schemes);
+        } else {
+            security_names(value, &mut usage.schemes);
+        }
+        if key == "paths" || key == "webhooks" {
+            for item in value.as_object().into_iter().flat_map(|m| m.values()) {
+                for method in crate::swagger2::METHODS {
+                    let tags = item
+                        .get(method)
+                        .and_then(|op| op.get("tags"))
+                        .and_then(Value::as_array);
+                    usage.tags.extend(
+                        tags.into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(String::from),
+                    );
+                }
+            }
+        }
+    }
+
+    while let Some(reference) = pending.pop() {
+        let Some((section, name)) = component_of(&reference) else {
+            continue;
+        };
+        if !usage.components.insert((section.clone(), name.clone())) {
+            continue;
+        }
+        if let Some(component) = spec.pointer(&format!(
+            "/components/{}/{}",
+            crate::validate::pointer_escape(&section),
+            crate::validate::pointer_escape(&name)
+        )) {
+            crate::bundle::walk_refs(component, &mut |r| pending.push(r.to_string()));
+            mapping_targets(component, &mut pending);
+        }
+    }
+    usage
+}
+
+/// Remove one component (and its section when that empties it); returns whether it existed.
+fn remove_component(spec: &mut Value, section: &str, name: &str) -> bool {
+    let Some(Value::Object(components)) = spec.get_mut("components") else {
+        return false;
+    };
+    let Some(Value::Object(entries)) = components.get_mut(section) else {
+        return false;
+    };
+    let existed = entries.shift_remove(name).is_some();
+    if existed && entries.is_empty() {
+        components.shift_remove(section);
+    }
+    existed
+}
+
+fn prune(spec: &mut Value, before: &Usage, after: &Usage) {
+    let mut pruned = false;
+    for (section, name) in before.components.difference(&after.components) {
+        pruned |= remove_component(spec, section, name);
+    }
+    for name in before.schemes.difference(&after.schemes) {
+        pruned |= remove_component(spec, "securitySchemes", name);
+    }
+    // `components` is only dropped when pruning is what emptied it.
+    if pruned
+        && spec
+            .get("components")
+            .and_then(Value::as_object)
+            .is_some_and(|c| c.is_empty())
+    {
+        if let Some(root) = spec.as_object_mut() {
+            root.shift_remove("components");
+        }
+    }
+    if let Some(Value::Array(tags)) = spec.get_mut("tags") {
+        let had = !tags.is_empty();
+        tags.retain(|tag| {
+            let name = tag.get("name").and_then(Value::as_str).unwrap_or("");
+            !(before.tags.contains(name) && !after.tags.contains(name))
+        });
+        if had && tags.is_empty() {
+            if let Some(root) = spec.as_object_mut() {
+                root.shift_remove("tags");
+            }
+        }
+    }
+}
+
+/// Hide the operations the rules do not keep and prune what only they used: components,
+/// security schemes and tags that were in use before but are not any more. Returns whether
+/// anything was removed (when `false` the spec is untouched).
+pub fn filter_spec(spec: &mut Value, include: &[&FilterRules], exclude: &[&FilterRules]) -> bool {
+    if include.is_empty() && exclude.is_empty() {
+        return false;
+    }
+    let before = usage(spec);
+    if !remove_operations(spec, include, exclude) {
+        return false;
+    }
+    let after = usage(spec);
+    prune(spec, &before, &after);
+    true
 }
 
 #[cfg(test)]
@@ -530,5 +710,139 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/b", "/c", "/d"]
         );
+    }
+
+    fn api() -> Value {
+        json!({
+            "openapi": "3.0.3",
+            "info": {"title": "T", "version": "1"},
+            "tags": [{"name": "pub"}, {"name": "internal"}, {"name": "unusedTag"}],
+            "paths": {
+                "/public": {"get": {"tags": ["pub"], "security": [{"publicKey": []}], "responses": {
+                    "200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}},
+                "/internal": {"get": {"tags": ["internal"], "security": [{"internalKey": []}],
+                    "parameters": [{"$ref": "#/components/parameters/InternalHeader"}],
+                    "responses": {
+                    "200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Secret"}}}},
+                    "404": {"$ref": "#/components/responses/InternalNotFound"}}}}
+            },
+            "components": {
+                "schemas": {
+                    "Pet": {"type": "object", "properties": {"shared": {"$ref": "#/components/schemas/Shared"}}},
+                    "Shared": {"type": "string"},
+                    "Secret": {"type": "object", "properties": {"inner": {"$ref": "#/components/schemas/Inner"}, "pet": {"$ref": "#/components/schemas/Pet"}}},
+                    "Inner": {"type": "object", "properties": {"back": {"$ref": "#/components/schemas/Secret"}}},
+                    "Orphan": {"type": "string"}
+                },
+                "parameters": {"InternalHeader": {"name": "X-Internal", "in": "header", "schema": {"type": "string"}}},
+                "responses": {"InternalNotFound": {"description": "nf"}},
+                "securitySchemes": {
+                    "publicKey": {"type": "apiKey", "name": "k", "in": "header"},
+                    "internalKey": {"type": "apiKey", "name": "i", "in": "header"}
+                }
+            }
+        })
+    }
+
+    fn hide_internal(spec: &mut Value) -> bool {
+        let r = rules(json!({"tags": ["internal"]}));
+        filter_spec(spec, &[], &[&r])
+    }
+
+    fn names(spec: &Value, section: &str) -> Vec<String> {
+        spec["components"][section]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn schemas_only_hidden_operations_used_are_pruned() {
+        let mut spec = api();
+        assert!(hide_internal(&mut spec));
+        // Secret <-> Inner (a cycle) was only reachable from the hidden operation.
+        assert_eq!(names(&spec, "schemas"), vec!["Pet", "Shared", "Orphan"]);
+    }
+
+    #[test]
+    fn parameters_and_responses_are_pruned_and_emptied_sections_removed() {
+        let mut spec = api();
+        hide_internal(&mut spec);
+        assert!(spec["components"].get("parameters").is_none());
+        assert!(spec["components"].get("responses").is_none());
+        assert!(spec["components"].get("schemas").is_some());
+    }
+
+    #[test]
+    fn pre_existing_empty_sections_are_left_alone() {
+        let mut spec = api();
+        spec["components"]["examples"] = json!({});
+        hide_internal(&mut spec);
+        assert_eq!(spec["components"]["examples"], json!({}));
+    }
+
+    #[test]
+    fn components_is_removed_when_pruning_empties_it() {
+        let mut spec = json!({"openapi":"3.0.3","info":{"title":"T","version":"1"},
+            "paths":{"/a":{"get":{"tags":["internal"],"responses":{"200":{"description":"ok","content":{
+                "application/json":{"schema":{"$ref":"#/components/schemas/S"}}}}}}}},
+            "components":{"schemas":{"S":{"type":"string"}}}});
+        hide_internal(&mut spec);
+        assert!(spec.get("components").is_none());
+    }
+
+    #[test]
+    fn discriminator_mapping_targets_count_as_references() {
+        let mut spec = api();
+        spec["components"]["schemas"]["Secret"]["discriminator"] =
+            json!({"propertyName": "k", "mapping": {"x": "#/components/schemas/SubSecret"}});
+        spec["components"]["schemas"]["SubSecret"] = json!({"type": "object"});
+        hide_internal(&mut spec);
+        assert!(!names(&spec, "schemas").contains(&"SubSecret".to_string()));
+    }
+
+    #[test]
+    fn security_schemes_follow_their_users() {
+        let mut spec = api();
+        hide_internal(&mut spec);
+        assert_eq!(names(&spec, "securitySchemes"), vec!["publicKey"]);
+
+        let mut spec = api();
+        spec["security"] = json!([{"internalKey": []}]);
+        hide_internal(&mut spec);
+        assert_eq!(
+            names(&spec, "securitySchemes"),
+            vec!["publicKey", "internalKey"]
+        );
+    }
+
+    #[test]
+    fn tags_used_only_by_hidden_operations_are_pruned() {
+        let mut spec = api();
+        hide_internal(&mut spec);
+        let tags: Vec<&str> = spec["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(tags, vec!["pub", "unusedTag"]);
+
+        let mut spec = json!({"openapi":"3.0.3","info":{"title":"T","version":"1"},
+            "tags":[{"name":"internal"}],
+            "paths":{"/a":{"get":{"tags":["internal"],"responses":ok()}},"/b":{"get":{"responses":ok()}}}});
+        hide_internal(&mut spec);
+        assert!(spec.get("tags").is_none());
+    }
+
+    #[test]
+    fn nothing_removed_means_nothing_pruned() {
+        let mut spec = api();
+        let before = spec.clone();
+        let r = rules(json!({"tags": ["nope"]}));
+        assert!(!filter_spec(&mut spec, &[], &[&r]));
+        assert_eq!(spec, before);
+        assert!(!filter_spec(&mut spec, &[], &[]));
+        assert_eq!(spec, before);
     }
 }

@@ -53,6 +53,7 @@ pub use config::{
     OutputFormat, ServerEntry, Source, TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
+pub use filter::{filter_spec, glob_match};
 pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
 pub use prepare::{
     bundle_source, parse_content, prepare_source, prepare_source_with_notes, PreparedSource,
