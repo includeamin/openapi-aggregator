@@ -21,6 +21,16 @@ export interface ConfigSummary {
   format: 'yaml' | 'json';
 }
 
+export interface MissingDocument {
+  location: string;
+  referencedFrom: string;
+}
+
+/** For each source (same order as the config), the external documents it still needs. */
+export interface PendingRefs {
+  sources: MissingDocument[][];
+}
+
 export interface AggregateOutput {
   text: string;
   warnings: string[];

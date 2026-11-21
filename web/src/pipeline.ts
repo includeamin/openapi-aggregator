@@ -1,5 +1,8 @@
-import { errorMessage, resolveSources, type Loader } from './resolve';
-import type { AggregateOutput, ConfigSummary, Problem, WorkspaceFile } from './types';
+import { errorMessage, resolveDocuments, resolveSources, type Loader, type WantedDocument } from './resolve';
+import type { AggregateOutput, ConfigSummary, PendingRefs, Problem, WorkspaceFile } from './types';
+
+/** Mirrors the engine's limit on external documents per config. */
+const MAX_DOCUMENTS = 100;
 
 export interface PipelineResult {
   text: string | null;
@@ -9,7 +12,8 @@ export interface PipelineResult {
 
 export interface PipelineDeps {
   parseConfig(yaml: string): ConfigSummary;
-  aggregate(yaml: string, contents: string[]): AggregateOutput;
+  pendingRefs(yaml: string, contents: string[], docs: Record<string, string>): PendingRefs;
+  aggregate(yaml: string, contents: string[], docs: Record<string, string>): AggregateOutput;
   load: Loader;
 }
 
@@ -31,8 +35,24 @@ export async function runPipeline(config: string, files: WorkspaceFile[], deps: 
   const { contents, problems } = await resolveSources(summary.sources, files, deps.load);
   if (!contents) return { text: null, format: summary.format, problems };
 
+  const docs: Record<string, string> = {};
   try {
-    const out = deps.aggregate(config, contents);
+    for (;;) {
+      const wanted = collectWanted(deps.pendingRefs(config, contents, docs), summary);
+      if (!wanted.length) break;
+      if (Object.keys(docs).length + wanted.length > MAX_DOCUMENTS) {
+        throw new Error(`too many external documents (limit ${MAX_DOCUMENTS})`);
+      }
+      const loaded = await resolveDocuments(wanted, files, deps.load);
+      if (loaded.problems.length) return { text: null, format: summary.format, problems: loaded.problems };
+      Object.assign(docs, loaded.docs);
+    }
+  } catch (e) {
+    return { text: null, format: summary.format, problems: [{ level: 'error', kind: 'merge', message: errorMessage(e) }] };
+  }
+
+  try {
+    const out = deps.aggregate(config, contents, docs);
     const warnings: Problem[] = out.warnings.map((message) => ({ level: 'warning', kind: 'merge', message }));
     return { text: out.text, format: summary.format, problems: [...problems, ...warnings] };
   } catch (e) {
@@ -42,6 +62,20 @@ export async function runPipeline(config: string, files: WorkspaceFile[], deps: 
       problems: [...problems, { level: 'error', kind: 'merge', message: errorMessage(e) }],
     };
   }
+}
+
+/** Flatten per-source pending documents, keeping the first source that needs each location. */
+function collectWanted(pending: PendingRefs, summary: ConfigSummary): WantedDocument[] {
+  const seen = new Set<string>();
+  const wanted: WantedDocument[] = [];
+  pending.sources.forEach((missing, index) => {
+    for (const doc of missing) {
+      if (seen.has(doc.location)) continue;
+      seen.add(doc.location);
+      wanted.push({ ...doc, source: summary.sources[index] });
+    }
+  });
+  return wanted;
 }
 
 /** Wrap an async function so only the most recent call's result is delivered. */

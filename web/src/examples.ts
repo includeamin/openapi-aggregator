@@ -180,6 +180,39 @@ definitions:
       name: { type: string }
 `;
 
+const MULTI_ROOT = `openapi: 3.0.3
+info:
+  title: Library API
+  version: 1.0.0
+paths:
+  /books:
+    get:
+      summary: List books
+      responses:
+        '200':
+          description: Books
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './schemas/book.yaml#/Book'
+`;
+
+const MULTI_BOOK = `Book:
+  type: object
+  properties:
+    title: { type: string }
+    author:
+      $ref: './author.yaml#/Author'
+`;
+
+const MULTI_AUTHOR = `Author:
+  type: object
+  properties:
+    name: { type: string }
+`;
+
 export const EXAMPLES: Example[] = [
   {
     id: 'rename',
@@ -291,6 +324,22 @@ sources:
     files: [
       { name: 'specs/legacy.yaml', content: LEGACY_SWAGGER2 },
       { name: 'specs/users.yaml', content: USERS },
+    ],
+  },
+  {
+    id: 'multi-file',
+    title: 'Multi-file spec ($ref to files)',
+    config: `# The root spec points at other files with $ref. Each external target is
+# hoisted into components, and the refs are rewritten to match.
+# Add the referenced files to the workspace under exactly the names the refs use.
+sources:
+  - name: library
+    path: ./specs/library.yaml
+`,
+    files: [
+      { name: 'specs/library.yaml', content: MULTI_ROOT },
+      { name: 'specs/schemas/book.yaml', content: MULTI_BOOK },
+      { name: 'specs/schemas/author.yaml', content: MULTI_AUTHOR },
     ],
   },
   {

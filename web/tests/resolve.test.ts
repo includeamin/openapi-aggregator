@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchText, guardLoader, memoizeLoader, resolveSources, substituteVars } from '../src/resolve';
+import { fetchText, guardLoader, memoizeLoader, resolveDocuments, resolveSources, substituteVars } from '../src/resolve';
 import type { Settings, SourceSummary } from '../src/types';
 
 const settings = (over: Partial<Settings> = {}): Settings => ({ proxy: '', variables: {}, ...over });
@@ -117,5 +117,56 @@ describe('guardLoader', () => {
 
     allowed = true;
     expect(await load('https://x.test/a', {})).toBe('spec');
+  });
+});
+
+describe('resolveDocuments', () => {
+  const urlRoot: SourceSummary = { name: 'r', kind: 'url', path: null, url: 'https://a.test/spec.yaml', headers: { Authorization: 'Bearer t' } };
+  const file = (name: string, content = 'X: {}') => ({ name, content });
+
+  it('reads workspace files by normalised key', async () => {
+    const { docs, problems } = await resolveDocuments(
+      [{ location: 'specs/a.yaml', referencedFrom: 'root.yaml', source: fileSource('root.yaml') }],
+      [file('./specs/a.yaml', 'A: {}')],
+      async () => 'unused',
+    );
+    expect(problems).toEqual([]);
+    expect(docs).toEqual({ 'specs/a.yaml': 'A: {}' });
+  });
+
+  it('reports every missing file, not just the first', async () => {
+    const { problems } = await resolveDocuments(
+      [
+        { location: 'a.yaml', referencedFrom: 'root.yaml', source: fileSource('root.yaml') },
+        { location: 'b.yaml', referencedFrom: 'a.yaml', source: fileSource('root.yaml') },
+      ],
+      [],
+      async () => 'unused',
+    );
+    expect(problems.map((p) => p.kind)).toEqual(['missing-file', 'missing-file']);
+    expect(problems[1].message).toContain("'b.yaml' (referenced from 'a.yaml')");
+  });
+
+  it('sends headers only to the source origin and rejects file: refs', async () => {
+    const seen: Array<[string, Record<string, string>]> = [];
+    const load = async (url: string, headers: Record<string, string>) => {
+      seen.push([url, headers]);
+      return 'X: {}';
+    };
+    const { problems } = await resolveDocuments(
+      [
+        { location: 'https://a.test/d.yaml', referencedFrom: 'https://a.test/spec.yaml', source: urlRoot },
+        { location: 'https://b.test/d.yaml', referencedFrom: 'https://a.test/spec.yaml', source: urlRoot },
+        { location: 'file:///etc/passwd', referencedFrom: 'https://a.test/spec.yaml', source: urlRoot },
+      ],
+      [],
+      load,
+    );
+    expect(seen).toEqual([
+      ['https://a.test/d.yaml', { Authorization: 'Bearer t' }],
+      ['https://b.test/d.yaml', {}],
+    ]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0].message).toContain('file:');
   });
 });
