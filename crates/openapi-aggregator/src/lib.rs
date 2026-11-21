@@ -12,11 +12,11 @@ pub mod source;
 
 pub use error::Error;
 pub use openapi_aggregator_core::{
-    bundle_source, check_document_cap, config, is_url, merge, merge_specs, merge_specs_with_report,
-    missing_documents, parse_content, prepare_source, prepare_source_with_notes, resolve_location,
-    validate, Config, ConflictStrategy, Finding, InfoOverride, MergeConfig, MergeReport,
-    MissingDocument, OutputConfig, OutputFormat, PreparedSource, ServerEntry, Severity, Source,
-    TagEntry, TagPrefixStrategy,
+    bundle_source, check_document_cap, config, filter_source, is_url, merge, merge_specs,
+    merge_specs_with_report, missing_documents, parse_content, prepare_source,
+    prepare_source_with_notes, resolve_location, validate, Config, ConflictStrategy, Finding,
+    InfoOverride, MergeConfig, MergeReport, MissingDocument, OutputConfig, OutputFormat,
+    PreparedSource, ServerEntry, Severity, Source, TagEntry, TagPrefixStrategy,
 };
 pub use source::load_source;
 
@@ -68,7 +68,12 @@ pub async fn aggregate_with_options(
     };
     let prepared = try_join_all(config.sources.iter().map(|src| async {
         let prepared = load_source_with_client(src, &client).await?;
-        refs::resolve_external_refs(prepared, src, &ctx).await
+        let prepared = refs::resolve_external_refs(prepared, src, &ctx).await?;
+        Ok::<_, Error>(filter_source(
+            prepared,
+            config.merge.filter.as_ref(),
+            src.filter(),
+        ))
     }))
     .await?;
 

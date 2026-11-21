@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::bundle::bundle;
-use crate::config::Source;
+use crate::config::{FilterConfig, FilterRules, Source};
 use crate::error::Error;
+use crate::filter::filter_spec;
 use crate::merge::deep_merge;
 use crate::swagger2;
 
@@ -54,6 +55,31 @@ pub fn bundle_source(
         .notes
         .extend(notes.into_iter().map(|n| format!("source '{name}': {n}")));
     Ok(prepared)
+}
+
+/// Apply the global (`merge.filter`) and per-source filters to a prepared source, hiding the
+/// operations they exclude and pruning what only those operations used.
+///
+/// Every defined `exclude` applies; every defined `include` must match (the levels narrow).
+/// With no filters this is a no-op.
+pub fn filter_source(
+    mut prepared: PreparedSource,
+    global: Option<&FilterConfig>,
+    source: Option<&FilterConfig>,
+) -> PreparedSource {
+    let levels = [global, source];
+    let exclude: Vec<&FilterRules> = levels
+        .iter()
+        .flatten()
+        .filter_map(|f| f.exclude.as_ref())
+        .collect();
+    let include: Vec<&FilterRules> = levels
+        .iter()
+        .flatten()
+        .filter_map(|f| f.include.as_ref())
+        .collect();
+    filter_spec(&mut prepared.spec, &include, &exclude);
+    prepared
 }
 
 fn parse_and_prepare(content: &str, source: &Source) -> Result<(Value, Vec<String>), Error> {
@@ -369,5 +395,48 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("limit 100") && err.contains("x"), "{err}");
+    }
+
+    fn filter_cfg(yaml: &str) -> FilterConfig {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn two_op_source() -> PreparedSource {
+        let source = file_source("svc", None);
+        prepare_source_with_notes(
+            r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{
+                "/a":{"get":{"tags":["public"],"responses":{"200":{"description":"ok"}}}},
+                "/b":{"get":{"tags":["public","beta"],"responses":{"200":{"description":"ok"}}}},
+                "/c":{"get":{"tags":["private"],"responses":{"200":{"description":"ok"}}}}}}"#,
+            &source,
+        )
+        .unwrap()
+    }
+
+    fn path_names(prepared: &PreparedSource) -> Vec<String> {
+        prepared.spec["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn filter_source_combines_global_and_source_rules() {
+        let global = filter_cfg("exclude: {tags: [beta]}");
+        let local = filter_cfg("include: {tags: [public]}");
+        let filtered = filter_source(two_op_source(), Some(&global), Some(&local));
+        assert_eq!(path_names(&filtered), vec!["/a"]);
+
+        let only_global = filter_source(two_op_source(), Some(&global), None);
+        assert_eq!(path_names(&only_global), vec!["/a", "/c"]);
+    }
+
+    #[test]
+    fn filter_source_without_filters_changes_nothing() {
+        let before = two_op_source();
+        let after = filter_source(two_op_source(), None, None);
+        assert_eq!(after.spec, before.spec);
     }
 }

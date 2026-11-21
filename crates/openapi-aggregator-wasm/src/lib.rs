@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use openapi_aggregator_core::{
-    bundle_source, check_document_cap, merge_specs_with_report, missing_documents, parse_content,
-    prepare_source_with_notes, validate, Config, Error, OutputFormat, PreparedSource, Source,
+    bundle_source, check_document_cap, filter_source, merge_specs_with_report, missing_documents,
+    parse_content, prepare_source_with_notes, validate, Config, Error, OutputFormat,
+    PreparedSource, Source,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -185,6 +186,7 @@ pub fn aggregate_contents(
         check_document_cap(docs.len(), &prepared.name).map_err(|e| e.to_string())?;
         let prepared =
             bundle_source(prepared, &base_of(source), &docs).map_err(|e| e.to_string())?;
+        let prepared = filter_source(prepared, config.merge.filter.as_ref(), source.filter());
         notes.extend(prepared.notes);
         specs.push((prepared.name, source.tag_prefix(), prepared.spec));
     }
@@ -469,5 +471,17 @@ mod tests {
         )
         .unwrap();
         assert!(clean.findings.is_empty(), "{:?}", clean.findings);
+    }
+
+    #[test]
+    fn filters_hide_operations_in_the_output() {
+        let spec = "openapi: 3.0.3\ninfo: {title: S, version: '1'}\npaths:\n  /pub:\n    get:\n      responses: {'200': {description: ok}}\n  /internal/x:\n    get:\n      responses: {'200': {description: ok}}\n";
+        let config = "sources:\n  - path: s.yaml\nmerge:\n  filter:\n    exclude:\n      paths: ['/internal/**']\n";
+        let out = aggregate_contents(config, vec![spec.into()], HashMap::new()).unwrap();
+        assert!(
+            out.text.contains("/pub:") && !out.text.contains("/internal"),
+            "{}",
+            out.text
+        );
     }
 }

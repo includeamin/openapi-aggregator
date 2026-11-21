@@ -825,3 +825,84 @@ async fn url_source_cannot_read_local_files() {
         .to_string();
     assert!(err.contains("file:"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// operation filters
+// ---------------------------------------------------------------------------
+
+fn service_spec(name: &str, public_path: &str) -> String {
+    format!(
+        "openapi: 3.0.3
+info: {{title: {name}, version: '1'}}
+tags: [{{name: internal}}, {{name: public}}]
+paths:
+  {public_path}:
+    get:
+      tags: [public]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/Shared'}}
+  /internal/metrics:
+    get:
+      tags: [internal]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/{name}Internal'}}
+components:
+  schemas:
+    Shared: {{type: string}}
+    {name}Internal: {{type: object}}
+"
+    )
+}
+
+fn filter_dir(config: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("a.yaml"), &service_spec("A", "/a"));
+    write(&dir.path().join("b.yaml"), &service_spec("B", "/b"));
+    write(&dir.path().join("cfg.yaml"), config);
+    dir
+}
+
+const TWO_SOURCES: &str =
+    "sources:\n  - name: a\n    path: a.yaml\n  - name: b\n    path: b.yaml\n";
+
+#[tokio::test]
+async fn excluded_operations_no_longer_conflict_and_are_pruned() {
+    let dir = filter_dir(&format!(
+        "{TWO_SOURCES}merge:\n  filter:\n    exclude:\n      paths: ['/internal/**']\n"
+    ));
+    let report = run_config(dir.path(), false).await.unwrap();
+    let paths: Vec<&String> = report.spec["paths"].as_object().unwrap().keys().collect();
+    assert_eq!(paths, vec!["/a", "/b"]);
+    let schemas: Vec<&String> = report.spec["components"]["schemas"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(schemas, vec!["Shared"]);
+    let tags = serde_json::to_string(&report.spec["tags"]).unwrap();
+    assert!(!tags.contains("internal"), "{tags}");
+}
+
+#[tokio::test]
+async fn without_a_filter_the_same_sources_still_conflict() {
+    let dir = filter_dir(TWO_SOURCES);
+    assert!(run_config(dir.path(), false).await.is_err());
+}
+
+#[tokio::test]
+async fn source_level_include_narrows_only_that_source() {
+    let dir = filter_dir(
+        "sources:\n  - name: a\n    path: a.yaml\n    filter:\n      include:\n        tags: [public]\n  - name: b\n    path: b.yaml\n    filter:\n      exclude:\n        tags: [internal]\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    let paths: Vec<&String> = report.spec["paths"].as_object().unwrap().keys().collect();
+    assert_eq!(paths, vec!["/a", "/b"]);
+}
