@@ -66,6 +66,8 @@ pub fn validate(spec: &Value) -> Vec<Finding> {
         check_refs(spec, &mut out);
         check_operation_ids(spec, &mut out);
         check_paths(spec, &mut out);
+        check_security(spec, &mut out);
+        check_tags(spec, &mut out);
     }
     out.sort_by(|a, b| (&a.location, a.code).cmp(&(&b.location, b.code)));
     out
@@ -364,6 +366,62 @@ fn report_undeclared(
                 "undeclared-path-param",
                 format!("'{{{name}}}' in '{path}' has no matching path parameter"),
                 location,
+            ));
+        }
+    }
+}
+
+fn check_security(spec: &Value, out: &mut Vec<Finding>) {
+    let defined = |name: &str| {
+        spec.pointer("/components/securitySchemes")
+            .and_then(Value::as_object)
+            .is_some_and(|schemes| schemes.contains_key(name))
+    };
+    let mut check = |requirements: Option<&Value>, location: String| {
+        let Some(Value::Array(list)) = requirements else {
+            return;
+        };
+        for (index, requirement) in list.iter().enumerate() {
+            let Value::Object(requirement) = requirement else {
+                continue;
+            };
+            for scheme in requirement.keys().filter(|n| !defined(n)) {
+                out.push(error(
+                    "unknown-security-scheme",
+                    format!("security requirement names '{scheme}', which is not in components.securitySchemes"),
+                    format!("{location}/security/{index}"),
+                ));
+            }
+        }
+    };
+    check(spec.get("security"), String::new());
+    for (path, method, op) in operations(spec) {
+        check(op.get("security"), operation_pointer(path, method));
+    }
+}
+
+fn check_tags(spec: &Value, out: &mut Vec<Finding>) {
+    let declared: HashSet<&str> = match spec.get("tags") {
+        Some(Value::Array(tags)) if !tags.is_empty() => tags
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect(),
+        _ => return,
+    };
+    for (path, method, op) in operations(spec) {
+        let Some(Value::Array(tags)) = op.get("tags") else {
+            continue;
+        };
+        for tag in tags
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|t| !declared.contains(t))
+        {
+            out.push(finding(
+                Severity::Warning,
+                "undeclared-tag",
+                format!("tag '{tag}' is not declared in the top-level tags"),
+                operation_pointer(path, method),
             ));
         }
     }
@@ -704,5 +762,48 @@ mod tests {
             "/b/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}}
         }));
         assert!(validate(&fine).is_empty());
+    }
+
+    #[test]
+    fn unknown_security_scheme() {
+        let mut spec = spec_with_paths(
+            json!({"/p":{"get":{"security":[{"ghost":[]},{}, {"real":[]}],"responses":ok()}}}),
+        );
+        spec["security"] = json!([{"ghost": []}]);
+        spec["components"] = json!({"securitySchemes":{"real":{"type":"http","scheme":"basic"}}});
+        assert_eq!(
+            found(&spec),
+            vec![
+                (
+                    "unknown-security-scheme",
+                    Severity::Error,
+                    "/paths/~1p/get/security/0".into()
+                ),
+                (
+                    "unknown-security-scheme",
+                    Severity::Error,
+                    "/security/0".into()
+                ),
+            ]
+        );
+        spec["security"] = json!([{"real": []}]);
+        spec["paths"]["/p"]["get"]["security"] = json!([{"real": []}, {}]);
+        assert!(validate(&spec).is_empty());
+    }
+
+    #[test]
+    fn undeclared_tag_is_a_warning_only_when_tags_are_declared() {
+        let mut spec = spec_with_paths(json!({"/p":{"get":{"tags":["a","b"],"responses":ok()}}}));
+        assert!(validate(&spec).is_empty());
+        spec["tags"] = json!([]);
+        assert!(validate(&spec).is_empty());
+        spec["tags"] = json!([{"name":"a"}]);
+        let f = validate(&spec);
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].code, f[0].severity, f[0].location.as_str()),
+            ("undeclared-tag", Severity::Warning, "/paths/~1p/get")
+        );
+        assert!(f[0].message.contains("'b'"), "{}", f[0].message);
     }
 }
