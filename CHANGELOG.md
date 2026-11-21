@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-11-21
+
+### Documentation
+
+- Document operation filtering
+
+### Features
+
+- *(core)* Add filter configuration
+- *(core)* Add glob and filter rule matching
+- *(core)* Remove operations matched by filter rules
+- *(core)* Prune components, schemes and tags orphaned by filtering
+- Apply operation filters before merging
+- *(web)* Add a "hide internal endpoints" example
+
 ## [0.12.0] - 2026-11-21
 
 ### Bug Fixes
