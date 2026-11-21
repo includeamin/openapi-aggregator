@@ -41,6 +41,7 @@ pub mod error;
 pub mod merge;
 pub mod prepare;
 pub mod swagger2;
+pub mod validate;
 
 pub use bundle::{
     bundle, check_document_cap, is_url, missing_documents, resolve_location, MissingDocument,
@@ -55,3 +56,4 @@ pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
 pub use prepare::{
     bundle_source, parse_content, prepare_source, prepare_source_with_notes, PreparedSource,
 };
+pub use validate::{validate, Finding, Severity};

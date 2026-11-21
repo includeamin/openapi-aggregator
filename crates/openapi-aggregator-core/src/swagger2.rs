@@ -82,7 +82,7 @@ pub fn convert(spec: Value) -> (Value, Vec<String>) {
     (out, notes)
 }
 
-const METHODS: [&str; 8] = [
+pub(crate) const METHODS: [&str; 8] = [
     "get", "put", "post", "delete", "options", "head", "patch", "trace",
 ];
 
