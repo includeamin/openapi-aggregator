@@ -299,6 +299,11 @@ fn check_paths(spec: &Value, out: &mut Vec<Finding>) {
             }
         }
 
+        // A path item that is a `$ref` takes its operations from elsewhere.
+        if item.get("$ref").is_some() {
+            continue;
+        }
+
         let template = template_params(path);
         let item_params = parameter_keys(spec, item.get("parameters"));
         let ops: Vec<(&str, &Value)> = crate::swagger2::METHODS
@@ -805,5 +810,14 @@ mod tests {
             ("undeclared-tag", Severity::Warning, "/paths/~1p/get")
         );
         assert!(f[0].message.contains("'b'"), "{}", f[0].message);
+    }
+
+    #[test]
+    fn path_item_refs_are_not_checked_for_path_params() {
+        let spec = spec_with_paths(json!({
+            "/a/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}},
+            "/b/{id}":{"$ref":"#/paths/~1a~1{id}"}
+        }));
+        assert!(validate(&spec).is_empty(), "{:?}", validate(&spec));
     }
 }
