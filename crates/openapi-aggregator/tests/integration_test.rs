@@ -16,6 +16,7 @@ async fn load_yaml_file_source() {
         path: fixtures().join("petstore.yaml"),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "petstore");
@@ -30,6 +31,7 @@ async fn load_json_file_source() {
         path: fixtures().join("conflict.json"),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "conflict");
@@ -45,12 +47,14 @@ async fn aggregate_two_specs_from_config() {
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
             Source::File {
                 name: Some("users".into()),
                 path: fixtures().join("users.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -96,12 +100,14 @@ async fn aggregate_applies_additional_blocks_per_source() {
                         }
                     }
                 })),
+                filter: None,
             },
             Source::File {
                 name: Some("users".into()),
                 path: fixtures().join("users.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -125,12 +131,14 @@ async fn aggregate_conflict_errors_by_default() {
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
             Source::File {
                 name: Some("conflict".into()),
                 path: fixtures().join("conflict.json"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -152,12 +160,14 @@ async fn aggregate_conflict_rename_rewrites_refs() {
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
             Source::File {
                 name: Some("alt".into()),
                 path: fixtures().join("conflict.json"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -264,6 +274,7 @@ async fn http_source_with_headers() {
             .collect(),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
 
     let (name, spec) = load_source(&source).await.unwrap();
@@ -296,6 +307,7 @@ async fn http_source_rejects_non_success_status() {
         headers: Default::default(),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
 
     let error = load_source(&source).await.unwrap_err();
@@ -325,6 +337,7 @@ async fn http_source_expands_env_vars_in_headers() {
         .collect(),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
 
     let (_, spec) = load_source(&source).await.unwrap();
@@ -348,12 +361,14 @@ async fn aggregate_with_report_returns_version_warnings() {
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
             Source::File {
                 name: Some("new".into()),
                 path: v31,
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -431,6 +446,7 @@ async fn http_errors_do_not_leak_expanded_env_secrets() {
         headers: Default::default(),
         tag_prefix: None,
         additional_blocks: None,
+        filter: None,
     };
 
     let err = load_source(&source).await.unwrap_err();
@@ -466,12 +482,14 @@ async fn swagger2_source_merges_with_openapi3_and_refs_resolve() {
                 path: fixtures().join("petstore.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
             Source::File {
                 name: Some("legacy".into()),
                 path: fixtures().join("swagger2.yaml"),
                 tag_prefix: None,
                 additional_blocks: None,
+                filter: None,
             },
         ],
         output: Default::default(),
@@ -705,6 +723,7 @@ fn http_config(url: String, headers: &[(&str, &str)]) -> Config {
                 .collect(),
             tag_prefix: None,
             additional_blocks: None,
+            filter: None,
         }],
         output: Default::default(),
         merge: MergeConfig::default(),
@@ -805,4 +824,85 @@ async fn url_source_cannot_read_local_files() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("file:"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// operation filters
+// ---------------------------------------------------------------------------
+
+fn service_spec(name: &str, public_path: &str) -> String {
+    format!(
+        "openapi: 3.0.3
+info: {{title: {name}, version: '1'}}
+tags: [{{name: internal}}, {{name: public}}]
+paths:
+  {public_path}:
+    get:
+      tags: [public]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/Shared'}}
+  /internal/metrics:
+    get:
+      tags: [internal]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/{name}Internal'}}
+components:
+  schemas:
+    Shared: {{type: string}}
+    {name}Internal: {{type: object}}
+"
+    )
+}
+
+fn filter_dir(config: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("a.yaml"), &service_spec("A", "/a"));
+    write(&dir.path().join("b.yaml"), &service_spec("B", "/b"));
+    write(&dir.path().join("cfg.yaml"), config);
+    dir
+}
+
+const TWO_SOURCES: &str =
+    "sources:\n  - name: a\n    path: a.yaml\n  - name: b\n    path: b.yaml\n";
+
+#[tokio::test]
+async fn excluded_operations_no_longer_conflict_and_are_pruned() {
+    let dir = filter_dir(&format!(
+        "{TWO_SOURCES}merge:\n  filter:\n    exclude:\n      paths: ['/internal/**']\n"
+    ));
+    let report = run_config(dir.path(), false).await.unwrap();
+    let paths: Vec<&String> = report.spec["paths"].as_object().unwrap().keys().collect();
+    assert_eq!(paths, vec!["/a", "/b"]);
+    let schemas: Vec<&String> = report.spec["components"]["schemas"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(schemas, vec!["Shared"]);
+    let tags = serde_json::to_string(&report.spec["tags"]).unwrap();
+    assert!(!tags.contains("internal"), "{tags}");
+}
+
+#[tokio::test]
+async fn without_a_filter_the_same_sources_still_conflict() {
+    let dir = filter_dir(TWO_SOURCES);
+    assert!(run_config(dir.path(), false).await.is_err());
+}
+
+#[tokio::test]
+async fn source_level_include_narrows_only_that_source() {
+    let dir = filter_dir(
+        "sources:\n  - name: a\n    path: a.yaml\n    filter:\n      include:\n        tags: [public]\n  - name: b\n    path: b.yaml\n    filter:\n      exclude:\n        tags: [internal]\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    let paths: Vec<&String> = report.spec["paths"].as_object().unwrap().keys().collect();
+    assert_eq!(paths, vec!["/a", "/b"]);
 }

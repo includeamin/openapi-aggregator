@@ -11,6 +11,7 @@ Available as both a **Rust library** and a **CLI tool**.
 - **Swagger 2.0 support** – Swagger 2.0 sources are converted to OpenAPI 3.0.3 automatically; anything that had to be approximated is reported as a warning
 - **External `$ref`s** – specs split across files or URLs are bundled per source before merging (CLI sandboxed to the config directory)
 - **Validation and CI check** – `--check` validates the merged spec and fails the build when it is invalid or when a committed output file is stale
+- **Operation filters** – hide internal endpoints (by path glob, tag, `operationId` or an `x-` flag), globally or per source, with unused components and tags pruned
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -189,6 +190,32 @@ Example GitHub Actions step that keeps a committed spec in sync:
 
 The same validator is available as `openapi_aggregator::validate(&spec)`, and the playground shows its findings in the problems panel.
 
+## Hiding internal endpoints
+
+Build a public spec from sources that also describe internal endpoints by filtering operations out. Filters run **per source, before the merge**, so a hidden operation can never cause a path or component conflict (two services can both expose `/internal/metrics`).
+
+```yaml
+merge:
+  filter:                        # applies to every source
+    exclude:
+      paths: ["/internal/**", "/admin/*"]
+      tags: [internal]
+      operation_ids: [debugDump]
+      extensions: [x-internal]   # truthy on the operation or its path item
+sources:
+  - name: billing
+    path: billing.yaml
+    filter:                      # this source only
+      include:
+        tags: [public]           # allow-list: keep only these operations
+```
+
+- **Rules:** an operation matches a rule if *any* of its criteria match (`paths`, `tags`, `operation_ids`, `extensions`). Nothing is hidden by default; list `x-internal` explicitly if you use it.
+- **Combining:** `exclude` rules from the global and source level all apply, and `exclude` wins over `include`. `include` is an allow-list; when both levels define one, an operation must satisfy both.
+- **Globs:** `*` matches within one path segment (`/admin/*` does not match `/admin/a/b`), `**` matches across segments (`/internal/**`). Everything else, including `{id}`, is literal. Globs apply to `paths` only, not `webhooks`.
+- **Cleanup:** a path left with no operations is removed. Components (schemas, parameters, responses, ...), security schemes and tags that were used before filtering and are unused afterwards are pruned. Things that were never referenced to begin with are left alone.
+- **Not scrubbed:** the filter does not look inside descriptions, examples, `servers`, `info` or vendor extensions, so check those for internal details yourself. External documents referenced only by hidden operations are still loaded.
+
 ## Library Usage
 
 ```rust
@@ -202,6 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name: Some("petstore".into()),
                 path: "./specs/petstore.yaml".into(),
                 additional_blocks: None,
+                filter: None,
                 tag_prefix: None,
             },
             Source::Http {
@@ -211,6 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into_iter()
                     .collect(),
                 additional_blocks: None,
+                filter: None,
                 tag_prefix: None,
             },
         ],

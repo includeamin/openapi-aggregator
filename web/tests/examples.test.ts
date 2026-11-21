@@ -73,6 +73,22 @@ describe('examples', () => {
     expect(result.text).not.toMatch(/\.yaml#/);
   });
 
+  it('hide-internal example removes internal endpoints and everything only they used', async () => {
+    const ex = findExample('hide-internal');
+    expect(ex.id).toBe('hide-internal');
+    const result = await runPipeline(ex.config, ex.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+    expect(result.problems).toEqual([]);
+    const text = result.text!;
+    expect(text).toContain('/invoices:');
+    expect(text).toContain('/users:');
+    expect(text).not.toContain('/internal');
+    expect(text).not.toContain('/debug');
+    expect(text).not.toContain('/audit');
+    expect(text).not.toMatch(/internal/i);
+    expect(text).not.toContain('AuditEntry');
+    expect(text).not.toContain('Metrics');
+  });
+
   it('per-operation example combines GET and POST on one path', async () => {
     const ex = findExample('per-operation');
     const { contents } = await resolveSources(parseConfig(ex.config).sources, ex.files, noNetwork);

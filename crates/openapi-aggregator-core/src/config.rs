@@ -17,8 +17,15 @@ pub struct Config {
 impl Config {
     /// Parse a YAML (or JSON) config document.
     pub fn from_yaml(text: &str) -> Result<Self, crate::error::Error> {
-        serde_yaml::from_str(text)
-            .map_err(|e| crate::error::Error::Config(format!("failed to parse config file: {e}")))
+        let config: Self = serde_yaml::from_str(text).map_err(|e| {
+            crate::error::Error::Config(format!("failed to parse config file: {e}"))
+        })?;
+        if let Some(filter) = &config.merge.filter {
+            filter.validate("merge.filter").map_err(|e| {
+                crate::error::Error::Config(format!("failed to parse config file: {e}"))
+            })?;
+        }
+        Ok(config)
     }
 }
 
@@ -43,6 +50,8 @@ pub enum Source {
         /// Additional blocks deep-merged into this source spec before merge.
         /// Can be used for vendor extensions or any custom OpenAPI blocks.
         additional_blocks: Option<Value>,
+        /// Operations to hide from (or keep of) this source, in addition to `merge.filter`.
+        filter: Option<FilterConfig>,
     },
     File {
         name: Option<String>,
@@ -53,6 +62,8 @@ pub enum Source {
         /// Additional blocks deep-merged into this source spec before merge.
         /// Can be used for vendor extensions or any custom OpenAPI blocks.
         additional_blocks: Option<Value>,
+        /// Operations to hide from (or keep of) this source, in addition to `merge.filter`.
+        filter: Option<FilterConfig>,
     },
 }
 
@@ -67,6 +78,7 @@ struct RawSource {
     headers: Option<HashMap<String, String>>,
     tag_prefix: Option<String>,
     additional_blocks: Option<Value>,
+    filter: Option<FilterConfig>,
 }
 
 impl TryFrom<RawSource> for Source {
@@ -78,6 +90,9 @@ impl TryFrom<RawSource> for Source {
             .as_deref()
             .map(|n| format!("source '{n}'"))
             .unwrap_or_else(|| "source".into());
+        if let Some(filter) = &raw.filter {
+            filter.validate(&format!("{label} filter"))?;
+        }
         match (raw.url, raw.path) {
             (Some(url), None) => Ok(Source::Http {
                 name: raw.name,
@@ -85,6 +100,7 @@ impl TryFrom<RawSource> for Source {
                 headers: raw.headers.unwrap_or_default(),
                 tag_prefix: raw.tag_prefix,
                 additional_blocks: raw.additional_blocks,
+                filter: raw.filter,
             }),
             (None, Some(path)) => {
                 if raw.headers.is_some() {
@@ -97,6 +113,7 @@ impl TryFrom<RawSource> for Source {
                     path,
                     tag_prefix: raw.tag_prefix,
                     additional_blocks: raw.additional_blocks,
+                    filter: raw.filter,
                 })
             }
             (Some(_), Some(_)) => Err(format!(
@@ -136,6 +153,13 @@ impl Source {
         }
     }
 
+    /// The per-source operation filter, if any.
+    pub fn filter(&self) -> Option<&FilterConfig> {
+        match self {
+            Source::Http { filter, .. } | Source::File { filter, .. } => filter.as_ref(),
+        }
+    }
+
     /// Return the tag prefix for this source: custom `tag_prefix` field if set, otherwise the display name.
     pub fn tag_prefix(&self) -> String {
         match self {
@@ -143,6 +167,81 @@ impl Source {
                 tag_prefix.clone().unwrap_or_else(|| self.display_name())
             }
         }
+    }
+}
+
+/// Which operations a filter rule applies to. An operation matches when **any** criterion
+/// matches. See [`FilterConfig`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilterRules {
+    /// Path globs (`*` within one segment, `**` across segments), e.g. `/internal/**`.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Operations having any of these tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Operations with any of these `operationId`s.
+    #[serde(default)]
+    pub operation_ids: Vec<String>,
+    /// Vendor extensions (`x-...`) that are truthy on the operation or its path item.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+}
+
+impl FilterRules {
+    fn validate(&self, context: &str) -> Result<(), String> {
+        if self.paths.is_empty()
+            && self.tags.is_empty()
+            && self.operation_ids.is_empty()
+            && self.extensions.is_empty()
+        {
+            return Err(format!(
+                "{context} must list at least one rule (paths, tags, operation_ids or extensions)"
+            ));
+        }
+        for path in &self.paths {
+            if !path.starts_with('/') {
+                return Err(format!(
+                    "{context}.paths entry '{path}' must start with '/'"
+                ));
+            }
+        }
+        for extension in &self.extensions {
+            if !extension.starts_with("x-") {
+                return Err(format!(
+                    "{context}.extensions entry '{extension}' must start with 'x-'"
+                ));
+            }
+        }
+        for (key, entries) in [("tags", &self.tags), ("operation_ids", &self.operation_ids)] {
+            if entries.iter().any(|e| e.is_empty()) {
+                return Err(format!("{context}.{key} entries must not be empty"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Select which operations end up in the merged spec: `exclude` hides matching operations,
+/// `include` (an allow-list) keeps only matching ones. Exclude wins.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilterConfig {
+    pub include: Option<FilterRules>,
+    pub exclude: Option<FilterRules>,
+}
+
+impl FilterConfig {
+    /// Check the rules are well-formed; `context` names the config location for errors.
+    pub fn validate(&self, context: &str) -> Result<(), String> {
+        if let Some(rules) = &self.include {
+            rules.validate(&format!("{context}.include"))?;
+        }
+        if let Some(rules) = &self.exclude {
+            rules.validate(&format!("{context}.exclude"))?;
+        }
+        Ok(())
     }
 }
 
@@ -198,6 +297,8 @@ pub struct MergeConfig {
     /// If set, replaces any tags collected from sources.
     /// (Operation-level tag references are NOT rewritten; these should match.)
     pub tags: Option<Vec<TagEntry>>,
+    /// Operations to hide from (or keep of) every source.
+    pub filter: Option<FilterConfig>,
 }
 
 impl Default for MergeConfig {
@@ -210,6 +311,7 @@ impl Default for MergeConfig {
             info: None,
             servers: None,
             tags: None,
+            filter: None,
         }
     }
 }
@@ -334,7 +436,79 @@ mod tests {
             headers: HashMap::new(),
             tag_prefix: None,
             additional_blocks: None,
+            filter: None,
         };
         assert_eq!(source.display_name(), "billing.example.com");
+    }
+
+    const FILTER_YAML: &str = "
+sources:
+  - name: billing
+    path: billing.yaml
+    filter:
+      include:
+        tags: [public]
+merge:
+  filter:
+    exclude:
+      paths: ['/internal/**', '/admin/*']
+      tags: [internal]
+      operation_ids: [debugDump]
+      extensions: [x-internal]
+";
+
+    #[test]
+    fn parses_filters() {
+        let config = Config::from_yaml(FILTER_YAML).unwrap();
+        let global = config.merge.filter.as_ref().unwrap();
+        assert!(global.include.is_none());
+        let exclude = global.exclude.as_ref().unwrap();
+        assert_eq!(exclude.paths, vec!["/internal/**", "/admin/*"]);
+        assert_eq!(exclude.tags, vec!["internal"]);
+        assert_eq!(exclude.operation_ids, vec!["debugDump"]);
+        assert_eq!(exclude.extensions, vec!["x-internal"]);
+
+        let source_filter = config.sources[0].filter().unwrap();
+        assert_eq!(source_filter.include.as_ref().unwrap().tags, vec!["public"]);
+        assert!(source_filter.exclude.is_none());
+    }
+
+    #[test]
+    fn configs_without_filters_have_none() {
+        let config = Config::from_yaml("sources:\n  - path: a.yaml\n").unwrap();
+        assert!(config.merge.filter.is_none());
+        assert!(config.sources[0].filter().is_none());
+        let http = Config::from_yaml("sources:\n  - url: https://a.test/x\n").unwrap();
+        assert!(http.sources[0].filter().is_none());
+    }
+
+    #[test]
+    fn invalid_filters_are_config_errors() {
+        let global =
+            |rules: &str| format!("sources:\n  - path: a.yaml\nmerge:\n  filter:\n    {rules}\n");
+        let source = |rules: &str| {
+            format!("sources:\n  - name: s\n    path: a.yaml\n    filter:\n      {rules}\n")
+        };
+        let cases = [
+            (global("exclude: {tag: [x]}"), "tag"),
+            (global("include: {}"), "merge.filter.include"),
+            (global("exclude: {tags: []}"), "at least one rule"),
+            (
+                global("exclude: {paths: ['internal/**']}"),
+                "must start with '/'",
+            ),
+            (
+                global("exclude: {extensions: [internal]}"),
+                "must start with 'x-'",
+            ),
+            (global("exclude: {tags: ['']}"), "empty"),
+            (source("include: {}"), "source 's'"),
+            (source("exclude: {operation_ids: ['']}"), "empty"),
+            (source("exclude: {paths: ['x']}"), "must start with '/'"),
+        ];
+        for (yaml, fragment) in cases {
+            let err = Config::from_yaml(&yaml).unwrap_err().to_string();
+            assert!(err.contains(fragment), "expected '{fragment}' in: {err}");
+        }
     }
 }
