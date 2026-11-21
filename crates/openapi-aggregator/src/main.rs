@@ -1,3 +1,5 @@
+mod check;
+
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -23,6 +25,15 @@ struct Cli {
     /// Let external `$ref`s read files outside the config directory
     #[arg(long)]
     allow_outside_config_dir: bool,
+
+    /// Validate the merged spec and exit non-zero on problems; with --output, also fail
+    /// when that file is out of date. Writes nothing.
+    #[arg(long)]
+    check: bool,
+
+    /// With --check, treat warnings as failures
+    #[arg(long, requires = "check")]
+    deny_warnings: bool,
 }
 
 fn parse_format(s: &str) -> Result<OutputFormat, String> {
@@ -39,13 +50,16 @@ fn parse_format(s: &str) -> Result<OutputFormat, String> {
 async fn main() {
     let cli = Cli::parse();
 
-    if let Err(e) = run(cli).await {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+    match run(cli).await {
+        Ok(outcome) => std::process::exit(outcome.exit_code()),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(cli: Cli) -> Result<check::Outcome, Box<dyn std::error::Error>> {
     let config = load_config(&cli.config)?;
     let options = AggregateOptions {
         allow_outside_config_dir: cli.allow_outside_config_dir,
@@ -54,6 +68,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let report = aggregate_with_options(&config, &options).await?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
+    }
+
+    if cli.check {
+        let mut outcome = check::run_validation(&report, cli.deny_warnings);
+        if let Some(path) = &cli.output {
+            let format = cli.format.unwrap_or(config.output.format);
+            let stale = check::check_output(path, &report.spec, &format);
+            // A validation failure (exit 1) outranks a stale file (exit 2).
+            if outcome == check::Outcome::Passed {
+                outcome = stale;
+            }
+        }
+        return Ok(outcome);
     }
 
     let format = cli.format.unwrap_or(config.output.format);
@@ -70,7 +97,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         None => print!("{text}"),
     }
 
-    Ok(())
+    Ok(check::Outcome::Passed)
 }
 
 #[cfg(test)]

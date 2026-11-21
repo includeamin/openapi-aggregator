@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use openapi_aggregator_core::{
     bundle_source, check_document_cap, merge_specs_with_report, missing_documents, parse_content,
-    prepare_source_with_notes, Config, Error, OutputFormat, PreparedSource, Source,
+    prepare_source_with_notes, validate, Config, Error, OutputFormat, PreparedSource, Source,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -29,6 +29,16 @@ pub struct ConfigSummary {
 pub struct AggregateOutput {
     pub text: String,
     pub warnings: Vec<String>,
+    /// Validation findings for the merged spec.
+    pub findings: Vec<FindingOut>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct FindingOut {
+    pub severity: &'static str,
+    pub code: &'static str,
+    pub message: String,
+    pub location: String,
 }
 
 fn format_name(format: &OutputFormat) -> &'static str {
@@ -188,9 +198,19 @@ pub fn aggregate_contents(
             serde_json::to_string_pretty(&report.spec).map_err(|e| e.to_string())? + "\n"
         }
     };
+    let findings = validate(&report.spec)
+        .into_iter()
+        .map(|f| FindingOut {
+            severity: f.severity.as_str(),
+            code: f.code,
+            message: f.message,
+            location: f.location,
+        })
+        .collect();
     Ok(AggregateOutput {
         text,
         warnings: report.warnings,
+        findings,
     })
 }
 
@@ -236,8 +256,8 @@ pub fn aggregate(yaml: &str, contents: Vec<String>, docs: JsValue) -> Result<JsV
 mod tests {
     use super::*;
 
-    const PETS: &str = "openapi: 3.0.3\ninfo: {title: Pets, version: '1'}\npaths:\n  /pets:\n    get: {summary: list}\n";
-    const USERS: &str = "openapi: 3.0.3\ninfo: {title: Users, version: '1'}\npaths:\n  /users:\n    get: {summary: list}\n";
+    const PETS: &str = "openapi: 3.0.3\ninfo: {title: Pets, version: '1'}\npaths:\n  /pets:\n    get: {summary: list, responses: {'200': {description: ok}}}\n";
+    const USERS: &str = "openapi: 3.0.3\ninfo: {title: Users, version: '1'}\npaths:\n  /users:\n    get: {summary: list, responses: {'200': {description: ok}}}\n";
 
     #[test]
     fn summarizes_sources_and_format() {
@@ -420,5 +440,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("root") && err.contains("a.yaml"), "{err}");
+    }
+
+    #[test]
+    fn findings_are_reported_for_the_merged_spec() {
+        let dangling = "openapi: 3.0.3\ninfo: {title: D, version: '1'}\npaths:\n  /d:\n    get:\n      responses:\n        '200':\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/Ghost'\n";
+        let out = aggregate_contents(
+            "sources:\n  - path: d.yaml\n",
+            vec![dangling.into()],
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(out.findings.len(), 1);
+        assert_eq!(
+            (out.findings[0].severity, out.findings[0].code),
+            ("error", "dangling-ref")
+        );
+        assert!(
+            out.findings[0].location.ends_with("/schema"),
+            "{}",
+            out.findings[0].location
+        );
+
+        let clean = aggregate_contents(
+            "sources:\n  - path: pets.yaml\n",
+            vec![PETS.into()],
+            HashMap::new(),
+        )
+        .unwrap();
+        assert!(clean.findings.is_empty(), "{:?}", clean.findings);
     }
 }

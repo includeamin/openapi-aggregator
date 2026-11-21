@@ -38,6 +38,14 @@ describe('status', () => {
       state: 'warning',
       label: 'Merged with warnings',
     });
+    expect(statusOf(result({ problems: [{ level: 'error', kind: 'validation', message: 'v' }] }))).toEqual({
+      state: 'error',
+      label: 'Merged with validation errors',
+    });
+    expect(statusOf(result({ problems: [{ level: 'warning', kind: 'validation', message: 'v' }] }))).toEqual({
+      state: 'warning',
+      label: 'Merged with warnings',
+    });
     expect(statusOf(result({ text: null, problems: [{ level: 'error', kind: 'config', message: 'c' }] }))).toEqual({
       state: 'error',
       label: 'Config has errors',

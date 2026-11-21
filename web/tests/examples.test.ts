@@ -21,6 +21,15 @@ describe('examples', () => {
   });
 
   for (const example of EXAMPLES) {
+    const noValidationErrors = async () => {
+      const result = await runPipeline(example.config, example.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+      return result.problems.filter((p) => p.kind === 'validation' && p.level === 'error');
+    };
+    const remote = parseConfigSafe(example.config).some((s) => s.kind === 'url');
+    it.skipIf(remote)(`${example.id}: merged output has no validation errors`, async () => {
+      expect(await noValidationErrors()).toEqual([]);
+    });
+
     it(`${example.id}: config parses`, () => {
       expect(() => parseConfig(example.config)).not.toThrow();
     });

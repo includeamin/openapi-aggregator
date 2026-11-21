@@ -31,12 +31,21 @@ export interface PendingRefs {
   sources: MissingDocument[][];
 }
 
+export interface Finding {
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+  /** JSON pointer into the merged spec. */
+  location: string;
+}
+
 export interface AggregateOutput {
   text: string;
   warnings: string[];
+  findings: Finding[];
 }
 
-export type ProblemKind = 'config' | 'missing-file' | 'variable' | 'cors' | 'http' | 'merge' | 'blocked';
+export type ProblemKind = 'config' | 'missing-file' | 'variable' | 'cors' | 'http' | 'merge' | 'validation' | 'blocked';
 
 export interface Problem {
   level: 'error' | 'warning';

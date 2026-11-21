@@ -10,6 +10,7 @@ Available as both a **Rust library** and a **CLI tool**.
 
 - **Swagger 2.0 support** – Swagger 2.0 sources are converted to OpenAPI 3.0.3 automatically; anything that had to be approximated is reported as a warning
 - **External `$ref`s** – specs split across files or URLs are bundled per source before merging (CLI sandboxed to the config directory)
+- **Validation and CI check** – `--check` validates the merged spec and fails the build when it is invalid or when a committed output file is stale
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -60,6 +61,9 @@ openapi-aggregator -c my-config.yaml -o merged.yaml
 
 # Output as JSON
 openapi-aggregator -c my-config.yaml -f json
+
+# Validate the merged spec and verify that merged.yaml is up to date (writes nothing)
+openapi-aggregator -c my-config.yaml -o merged.yaml --check
 
 # Print help
 openapi-aggregator --help
@@ -139,6 +143,51 @@ A source may point at other files or URLs (`$ref: ./schemas/pet.yaml#/Pet`, `$re
 - **URLs:** a URL source's `headers` are only sent to that URL's origin; refs to other hosts are fetched without them. A document fetched over HTTP can never cause a local file read, and `file:` URLs are not supported.
 - **Limit:** at most 100 external documents per source.
 - **Playground:** referenced files are looked up in the workspace by name, so add each one under exactly the name the `$ref` resolves to (the error message tells you which). Remote refs follow the same "Allow fetching" rule as remote sources.
+
+## Validation and CI
+
+`--check` merges the sources, validates the result, and exits non-zero on problems, so it can gate a CI job. It never writes anything and prints nothing to stdout; findings go to stderr.
+
+```sh
+openapi-aggregator --check -c openapi-aggregator.yaml -o openapi.yaml
+```
+
+- **Validation** always runs. It checks what an aggregation can break (it is not a full OpenAPI schema validation).
+- **Output comparison** runs when `-o` is given: the file is parsed and compared with the freshly merged spec *as data*, so formatting, YAML vs JSON and key order never count as a difference. On a mismatch a unified diff is printed. A missing or unparseable file counts as out of date.
+- **`--deny-warnings`** also fails on warnings (merge warnings, Swagger 2.0 conversion notes and validation warnings).
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Passed |
+| `1` | Validation errors, denied warnings, or the merge/config itself failed (if the file is also out of date, the diff is still printed) |
+| `2` | The output file is missing or out of date. Note that command-line usage errors also exit `2`. |
+
+Findings look like `error[dangling-ref] /paths/~1pets/get/...: $ref '#/components/schemas/Ghost' does not resolve`, where the location is a JSON pointer into the merged spec.
+
+| Code | Severity | Meaning |
+|------|----------|---------|
+| `invalid-openapi-version` | error | `openapi` is missing or not a 3.x version |
+| `missing-field` | error | `info`, `info.title`, `info.version` missing; `paths` missing (3.0), or none of `paths`/`webhooks`/`components` (3.1+) |
+| `dangling-ref` | error | an internal `$ref` that does not resolve |
+| `external-ref` | error | a `$ref` outside the document that was not bundled |
+| `duplicate-operation-id` | error | the same `operationId` on two operations |
+| `missing-responses` | error | an operation without `responses` |
+| `undeclared-path-param` | error | `{name}` in a path with no matching `in: path` parameter |
+| `unused-path-param` | warning | a path parameter that is not in the path |
+| `duplicate-parameter` | error | the same `name` and `in` declared twice |
+| `ambiguous-paths` | error | two paths that differ only in placeholder names |
+| `unknown-security-scheme` | error | a `security` requirement naming an undefined scheme |
+| `undeclared-tag` | warning | an operation tag missing from the top-level `tags` (only checked when `tags` is non-empty) |
+| `invalid-component-name` | error | a component name outside `[a-zA-Z0-9._-]+` |
+
+Example GitHub Actions step that keeps a committed spec in sync:
+
+```yaml
+- name: Check the aggregated spec
+  run: openapi-aggregator --check --deny-warnings -c openapi-aggregator.yaml -o openapi.yaml
+```
+
+The same validator is available as `openapi_aggregator::validate(&spec)`, and the playground shows its findings in the problems panel.
 
 ## Library Usage
 
