@@ -48,8 +48,8 @@ pub use bundle::{
     MAX_DOCUMENTS,
 };
 pub use config::{
-    Config, ConflictStrategy, InfoOverride, MergeConfig, OutputConfig, OutputFormat, ServerEntry,
-    Source, TagEntry, TagPrefixStrategy,
+    Config, ConflictStrategy, FilterConfig, FilterRules, InfoOverride, MergeConfig, OutputConfig,
+    OutputFormat, ServerEntry, Source, TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
 pub use merge::{merge_specs, merge_specs_with_report, MergeReport};

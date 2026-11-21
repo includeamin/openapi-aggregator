@@ -172,6 +172,7 @@ mod tests {
                     }
                 }
             })),
+            filter: None,
         };
 
         let base = r#"{
@@ -200,6 +201,7 @@ mod tests {
             path: PathBuf::from("ignored.yaml"),
             tag_prefix: None,
             additional_blocks: Some(json!({ "x-team": "core" })),
+            filter: None,
         };
         let (name, spec) = prepare_source(
             r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#,
@@ -226,6 +228,7 @@ mod tests {
             path: PathBuf::from("ignored.yaml"),
             tag_prefix: None,
             additional_blocks: blocks,
+            filter: None,
         }
     }
 
@@ -282,6 +285,7 @@ mod tests {
             path: PathBuf::from("ignored.yaml"),
             tag_prefix: None,
             additional_blocks: Some(json!([1, 2, 3])),
+            filter: None,
         };
 
         let base = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;

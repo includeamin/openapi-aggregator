@@ -202,6 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name: Some("petstore".into()),
                 path: "./specs/petstore.yaml".into(),
                 additional_blocks: None,
+                filter: None,
                 tag_prefix: None,
             },
             Source::Http {
@@ -211,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into_iter()
                     .collect(),
                 additional_blocks: None,
+                filter: None,
                 tag_prefix: None,
             },
         ],
