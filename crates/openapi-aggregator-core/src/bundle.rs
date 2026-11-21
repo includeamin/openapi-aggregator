@@ -210,6 +210,17 @@ pub fn missing_documents(
 /// Maximum number of external documents a single source may pull in.
 pub const MAX_DOCUMENTS: usize = 100;
 
+/// Fail when a source has pulled in more than [`MAX_DOCUMENTS`] external documents.
+pub fn check_document_cap(count: usize, source_name: &str) -> Result<(), Error> {
+    if count > MAX_DOCUMENTS {
+        return Err(Error::InvalidSpec {
+            name: source_name.to_string(),
+            reason: format!("too many external documents (limit {MAX_DOCUMENTS})"),
+        });
+    }
+    Ok(())
+}
+
 /// Bundle every external `$ref` in `spec` (located at `base`) into its `components`.
 /// Returns the bundled spec and notes about names that had to be changed.
 pub fn bundle(

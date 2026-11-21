@@ -11,8 +11,9 @@ pub mod source;
 
 pub use error::Error;
 pub use openapi_aggregator_core::{
-    config, merge, merge_specs, merge_specs_with_report, parse_content, prepare_source,
-    prepare_source_with_notes, Config, ConflictStrategy, InfoOverride, MergeConfig, MergeReport,
+    bundle_source, check_document_cap, config, is_url, merge, merge_specs, merge_specs_with_report,
+    missing_documents, parse_content, prepare_source, prepare_source_with_notes, resolve_location,
+    Config, ConflictStrategy, InfoOverride, MergeConfig, MergeReport, MissingDocument,
     OutputConfig, OutputFormat, PreparedSource, ServerEntry, Source, TagEntry, TagPrefixStrategy,
 };
 pub use source::load_source;

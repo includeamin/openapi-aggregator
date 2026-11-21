@@ -42,10 +42,16 @@ pub mod merge;
 pub mod prepare;
 pub mod swagger2;
 
+pub use bundle::{
+    bundle, check_document_cap, is_url, missing_documents, resolve_location, MissingDocument,
+    MAX_DOCUMENTS,
+};
 pub use config::{
     Config, ConflictStrategy, InfoOverride, MergeConfig, OutputConfig, OutputFormat, ServerEntry,
     Source, TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
 pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
-pub use prepare::{parse_content, prepare_source, prepare_source_with_notes, PreparedSource};
+pub use prepare::{
+    bundle_source, parse_content, prepare_source, prepare_source_with_notes, PreparedSource,
+};
