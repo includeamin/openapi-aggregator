@@ -31,6 +31,7 @@ export function statusOf(result: PipelineResult): { state: RunState; label: stri
   if (result.text === null) {
     return { state: 'error', label: kinds.has('config') ? 'Config has errors' : 'Merge failed' };
   }
+  if (result.problems.some((p) => p.level === 'error')) return { state: 'error', label: 'Merged with validation errors' };
   if (result.problems.length) return { state: 'warning', label: 'Merged with warnings' };
   return { state: 'ok', label: 'Merged' };
 }

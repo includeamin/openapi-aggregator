@@ -7,7 +7,7 @@ import { loadEngineForTests } from './helpers';
 beforeAll(loadEngineForTests);
 
 const deps = (load: PipelineDeps['load'] = async () => 'unused'): PipelineDeps => ({ parseConfig, aggregate, pendingRefs, load });
-const spec = (title: string, paths = '  /a:\n    get: {summary: a}\n') =>
+const spec = (title: string, paths = '  /a:\n    get: {summary: a, responses: {"200": {description: ok}}}\n') =>
   `openapi: 3.0.3\ninfo: {title: ${title}, version: '1'}\npaths:\n${paths}`;
 
 describe('runPipeline', () => {
@@ -51,7 +51,7 @@ describe('runPipeline', () => {
   });
 
   it('turns merge warnings into warning problems while keeping output', async () => {
-    const v31 = spec('B', '  /b:\n    get: {summary: b}\n').replace('3.0.3', '3.1.0');
+    const v31 = spec('B', '  /b:\n    get: {summary: b, responses: {"200": {description: ok}}}\n').replace('3.0.3', '3.1.0');
     const result = await runPipeline(
       'sources:\n  - path: a.yaml\n  - path: b.yaml\n',
       [
@@ -65,7 +65,7 @@ describe('runPipeline', () => {
   });
 
   it('stays fast for large specs (3,000 paths)', async () => {
-    const paths = Array.from({ length: 3000 }, (_, i) => `  /r${i}:\n    get: {summary: r${i}}\n`).join('');
+    const paths = Array.from({ length: 3000 }, (_, i) => `  /r${i}:\n    get: {summary: r${i}, responses: {"200": {description: ok}}}\n`).join('');
     const started = performance.now();
     const result = await runPipeline('sources:\n  - path: big.yaml\n', [{ name: 'big.yaml', content: spec('Big', paths) }], deps());
     expect(result.problems).toEqual([]);
@@ -156,5 +156,23 @@ describe('external refs', () => {
     expect(result.problems).toEqual([]);
     expect(calls.find(([u]) => u === 'https://a.test/api/local.yaml')?.[1]).toEqual({ Authorization: 'Bearer t' });
     expect(calls.find(([u]) => u === 'https://b.test/x.yaml')?.[1]).toEqual({});
+  });
+});
+
+describe('validation findings', () => {
+  const dangling = spec('V', '  /v:\n    get:\n      responses:\n        "200":\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Missing"\n');
+
+  it('shows output together with validation problems', async () => {
+    const result = await runPipeline('sources:\n  - path: v.yaml\n', [{ name: 'v.yaml', content: dangling }], deps());
+    expect(result.text).not.toBeNull();
+    expect(result.problems).toEqual([
+      expect.objectContaining({ level: 'error', kind: 'validation', message: expect.stringContaining('Missing') }),
+    ]);
+    expect(result.problems[0].message).toContain('/paths/~1v/get/responses/200/content/application~1json/schema');
+  });
+
+  it('reports no validation problems for a clean spec', async () => {
+    const result = await runPipeline('sources:\n  - path: a.yaml\n', [{ name: 'a.yaml', content: spec('A') }], deps());
+    expect(result.problems.filter((p) => p.kind === 'validation')).toEqual([]);
   });
 });

@@ -54,7 +54,12 @@ export async function runPipeline(config: string, files: WorkspaceFile[], deps: 
   try {
     const out = deps.aggregate(config, contents, docs);
     const warnings: Problem[] = out.warnings.map((message) => ({ level: 'warning', kind: 'merge', message }));
-    return { text: out.text, format: summary.format, problems: [...problems, ...warnings] };
+    const findings: Problem[] = out.findings.map((f) => ({
+      level: f.severity,
+      kind: 'validation',
+      message: `${f.message} (${f.location || '/'})`,
+    }));
+    return { text: out.text, format: summary.format, problems: [...problems, ...warnings, ...findings] };
   } catch (e) {
     return {
       text: null,

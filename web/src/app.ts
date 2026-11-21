@@ -138,7 +138,7 @@ export async function startApp(): Promise<void> {
     $('#problems').replaceChildren(
       ...problems.map((p) => {
         const li = el('li', `problem ${p.level}`);
-        li.append(icon('alert'), el('span', 'problem-source', p.source ?? (p.kind === 'config' ? 'config' : 'merge')));
+        li.append(icon('alert'), el('span', 'problem-source', p.source ?? (p.kind === 'config' ? 'config' : p.kind === 'validation' ? 'validation' : 'merge')));
         li.append(el('span', 'problem-message', p.message));
         return li;
       }),
