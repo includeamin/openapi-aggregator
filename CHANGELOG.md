@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-11-21
+
+### Bug Fixes
+
+- *(core)* Skip path-parameter checks for path items that are refs
+
+### Documentation
+
+- Document validation and check mode
+
+### Features
+
+- *(core)* Add a semantic validator for merged specs
+- *(core)* Validate that every $ref resolves
+- *(core)* Validate operations, path parameters and ambiguous paths
+- *(core)* Validate security requirements and tags
+- Report validation findings in the playground
+- *(cli)* Add --check and --deny-warnings
+- *(cli)* Verify the output file is up to date in check mode
+
 ## [0.11.0] - 2026-11-21
 
 ### Bug Fixes
