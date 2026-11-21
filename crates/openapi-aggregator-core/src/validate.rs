@@ -61,6 +61,7 @@ pub fn validate(spec: &Value) -> Vec<Finding> {
     if spec.is_object() {
         check_component_names(spec, &mut out);
         check_operations(spec, &mut out);
+        check_refs(spec, &mut out);
     }
     out.sort_by(|a, b| (&a.location, a.code).cmp(&(&b.location, b.code)));
     out
@@ -164,6 +165,31 @@ fn operations(spec: &Value) -> Vec<(&str, &str, &Value)> {
 
 fn operation_pointer(path: &str, method: &str) -> String {
     format!("/paths/{}/{method}", pointer_escape(path))
+}
+
+fn check_refs(spec: &Value, out: &mut Vec<Finding>) {
+    crate::bundle::walk_refs_at(spec, &mut |location, reference| {
+        let Some(pointer) = reference.strip_prefix('#') else {
+            out.push(error(
+                "external-ref",
+                format!("$ref '{reference}' points outside the document and was not bundled"),
+                location,
+            ));
+            return;
+        };
+        // `#anchor` style refs (3.1) cannot be resolved here; do not guess.
+        if !pointer.is_empty() && !pointer.starts_with('/') {
+            return;
+        }
+        let segments = crate::bundle::decode_pointer(pointer);
+        if crate::bundle::lookup(spec, &segments).is_none() {
+            out.push(error(
+                "dangling-ref",
+                format!("$ref '{reference}' does not resolve"),
+                location,
+            ));
+        }
+    });
 }
 
 fn check_operations(spec: &Value, out: &mut Vec<Finding>) {
@@ -310,5 +336,73 @@ mod tests {
     #[test]
     fn escapes_pointer_segments() {
         assert_eq!(pointer_escape("/a~b"), "~1a~0b");
+    }
+
+    fn with_schema_ref(reference: &str) -> Value {
+        let mut spec = minimal();
+        spec["paths"] = json!({"/p":{"get":{"responses":{"200":{"description":"ok","content":{
+            "application/json":{"schema":{"$ref": reference}}}}}}}});
+        spec
+    }
+
+    const SCHEMA_PTR: &str = "/paths/~1p/get/responses/200/content/application~1json/schema";
+
+    #[test]
+    fn dangling_ref_is_an_error_at_the_holder() {
+        let spec = with_schema_ref("#/components/schemas/Missing");
+        let f = validate(&spec);
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].code, f[0].severity),
+            ("dangling-ref", Severity::Error)
+        );
+        assert_eq!(f[0].location, SCHEMA_PTR);
+        assert!(
+            f[0].message.contains("#/components/schemas/Missing"),
+            "{}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn resolving_refs_are_fine() {
+        let mut spec = with_schema_ref("#/components/schemas/Pet");
+        spec["components"] = json!({"schemas":{"Pet":{"type":"object"}}});
+        assert!(validate(&spec).is_empty());
+        let spec = with_schema_ref("#/paths/~1p/get/responses/200");
+        assert!(validate(&spec).is_empty());
+    }
+
+    #[test]
+    fn external_refs_are_errors() {
+        let spec = with_schema_ref("./other.yaml#/X");
+        assert_eq!(
+            found(&spec),
+            vec![("external-ref", Severity::Error, SCHEMA_PTR.to_string())]
+        );
+    }
+
+    #[test]
+    fn ref_like_data_is_ignored() {
+        let mut spec = minimal();
+        spec["components"] = json!({
+            "examples": {"E": {"value": {"$ref": "#/nope"}}},
+            "schemas": {"S": {"type":"object","example":{"$ref":"#/nope"},"properties":{"x":{"default":{"$ref":"#/nope"}}}}}
+        });
+        assert!(validate(&spec).is_empty());
+    }
+
+    #[test]
+    fn property_named_default_is_still_checked() {
+        let mut spec = minimal();
+        spec["components"] = json!({"schemas":{"S":{"properties":{"default":{"$ref":"#/components/schemas/Ghost"}}}}});
+        assert_eq!(
+            found(&spec),
+            vec![(
+                "dangling-ref",
+                Severity::Error,
+                "/components/schemas/S/properties/default".to_string()
+            )]
+        );
     }
 }

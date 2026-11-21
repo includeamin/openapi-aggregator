@@ -149,10 +149,15 @@ const DATA_KEYS: [&str; 4] = ["example", "default", "enum", "value"];
 
 /// Visit every `$ref` string, skipping example/default/enum data.
 pub(crate) fn walk_refs(value: &Value, f: &mut dyn FnMut(&str)) {
-    walk(value, false, f);
+    walk_refs_at(value, &mut |_, reference| f(reference));
 }
 
-fn walk(value: &Value, names: bool, f: &mut dyn FnMut(&str)) {
+/// Like [`walk_refs`], also giving the JSON pointer of the object that holds each `$ref`.
+pub(crate) fn walk_refs_at(value: &Value, f: &mut dyn FnMut(&str, &str)) {
+    walk(value, false, &mut String::new(), f);
+}
+
+fn walk(value: &Value, names: bool, pointer: &mut String, f: &mut dyn FnMut(&str, &str)) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
@@ -160,12 +165,30 @@ fn walk(value: &Value, names: bool, f: &mut dyn FnMut(&str)) {
                     continue;
                 }
                 match child {
-                    Value::String(target) if !names && key == "$ref" => f(target),
-                    _ => walk(child, !names && NAME_MAPS.contains(&key.as_str()), f),
+                    Value::String(target) if !names && key == "$ref" => f(pointer, target),
+                    _ => {
+                        let len = pointer.len();
+                        pointer.push('/');
+                        pointer.push_str(&crate::validate::pointer_escape(key));
+                        walk(
+                            child,
+                            !names && NAME_MAPS.contains(&key.as_str()),
+                            pointer,
+                            f,
+                        );
+                        pointer.truncate(len);
+                    }
                 }
             }
         }
-        Value::Array(items) => items.iter().for_each(|item| walk(item, false, f)),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let len = pointer.len();
+                pointer.push_str(&format!("/{index}"));
+                walk(item, false, pointer, f);
+                pointer.truncate(len);
+            }
+        }
         _ => {}
     }
 }
@@ -308,7 +331,7 @@ fn sanitize_name(name: &str) -> String {
     }
 }
 
-fn lookup<'v>(document: &'v Value, segments: &[String]) -> Option<&'v Value> {
+pub(crate) fn lookup<'v>(document: &'v Value, segments: &[String]) -> Option<&'v Value> {
     let mut current = document;
     for segment in segments {
         current = match current {
