@@ -39,6 +39,7 @@ pub mod config;
 pub mod error;
 pub mod merge;
 pub mod prepare;
+pub mod swagger2;
 
 pub use config::{
     Config, ConflictStrategy, InfoOverride, MergeConfig, OutputConfig, OutputFormat, ServerEntry,
