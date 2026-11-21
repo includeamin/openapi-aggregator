@@ -25,7 +25,8 @@ describe('examples', () => {
     });
 
     const usesNetwork = parseConfigSafe(example.config).some((s) => s.kind === 'url');
-    it.skipIf(usesNetwork)(`${example.id}: merges without errors or warnings`, async () => {
+    const expectsWarnings = example.id === 'swagger2';
+    it.skipIf(usesNetwork || expectsWarnings)(`${example.id}: merges without errors or warnings`, async () => {
       const summary = parseConfig(example.config);
       const { contents, problems } = await resolveSources(summary.sources, example.files, noNetwork);
       expect(problems).toEqual([]);
@@ -42,6 +43,17 @@ describe('examples', () => {
     expect(text).toContain('/catalog/items:');
     expect(text).toContain('catalog_Item:');
     expect(text).toContain("'#/components/schemas/catalog_Item'");
+  });
+
+  it('swagger2 example converts the legacy spec and says so', async () => {
+    const ex = findExample('swagger2');
+    expect(ex.id).toBe('swagger2');
+    const { contents, problems } = await resolveSources(parseConfig(ex.config).sources, ex.files, noNetwork);
+    expect(problems).toEqual([]);
+    const out = aggregate(ex.config, contents!);
+    expect(out.text).toContain('openapi: 3.0.3');
+    expect(out.text).toContain('requestBody:');
+    expect(out.warnings.some((w) => w.includes('converted from Swagger 2.0'))).toBe(true);
   });
 
   it('per-operation example combines GET and POST on one path', async () => {

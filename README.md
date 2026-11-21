@@ -1,6 +1,6 @@
 # openapi-aggregator
 
-Aggregate and merge OpenAPI 3.x specifications from multiple sources into a single spec.
+Aggregate and merge OpenAPI 3.x (and Swagger 2.0) specifications from multiple sources into a single spec.
 
 Available as both a **Rust library** and a **CLI tool**.
 
@@ -8,6 +8,7 @@ Available as both a **Rust library** and a **CLI tool**.
 
 ## Features
 
+- **Swagger 2.0 support** – Swagger 2.0 sources are converted to OpenAPI 3.0.3 automatically; anything that had to be approximated is reported as a warning
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -197,6 +198,7 @@ Other top-level fields:
 
 - `webhooks` (OpenAPI 3.1) are merged like paths.
 - Top-level `security` stays top-level only when every source declares the same requirements. Otherwise each source's requirements are copied onto its own operations, so no operation gains or loses authentication. Renamed security schemes and `discriminator.mapping` entries are updated along with `$ref`s.
+- Swagger 2.0 sources are converted to OpenAPI 3.0.3 before merging (`host`/`basePath`/`schemes` become `servers`, `in: body` and `in: formData` parameters become `requestBody`, `definitions` move to `components`, and so on). Conversion is lenient and each approximation or dropped field is reported as a warning prefixed with the source name. Swagger 1.x is not supported.
 - The merged `openapi` version comes from the first source. The CLI prints a warning when sources use different `major.minor` versions (also available via `aggregate_with_report`).
 - Component types are always emitted in the same order, so the output is stable across runs.
 

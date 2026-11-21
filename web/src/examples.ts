@@ -149,6 +149,37 @@ components:
         title: { type: string }
 `;
 
+const LEGACY_SWAGGER2 = `swagger: '2.0'
+info:
+  title: Legacy Pets
+  version: 1.0.0
+host: legacy.example.com
+basePath: /v1
+schemes: [https]
+consumes: [application/json]
+produces: [application/json]
+paths:
+  /legacy-pets:
+    post:
+      summary: Add a pet
+      parameters:
+        - in: body
+          name: pet
+          required: true
+          schema:
+            $ref: '#/definitions/LegacyPet'
+      responses:
+        '201':
+          description: Created
+          schema:
+            $ref: '#/definitions/LegacyPet'
+definitions:
+  LegacyPet:
+    type: object
+    properties:
+      name: { type: string }
+`;
+
 export const EXAMPLES: Example[] = [
   {
     id: 'rename',
@@ -245,6 +276,22 @@ output:
   format: json
 `,
     files: [{ name: 'specs/users.yaml', content: USERS }],
+  },
+  {
+    id: 'swagger2',
+    title: 'Swagger 2.0 + OpenAPI 3',
+    config: `# A Swagger 2.0 source is converted to OpenAPI 3.0.3 automatically.
+# Anything that had to be approximated is reported as a warning.
+sources:
+  - name: legacy
+    path: ./specs/legacy.yaml
+  - name: users
+    path: ./specs/users.yaml
+`,
+    files: [
+      { name: 'specs/legacy.yaml', content: LEGACY_SWAGGER2 },
+      { name: 'specs/users.yaml', content: USERS },
+    ],
   },
   {
     id: 'remote',

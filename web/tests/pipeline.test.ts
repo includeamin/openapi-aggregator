@@ -26,16 +26,27 @@ describe('runPipeline', () => {
     expect(result.problems[0].line).toBeGreaterThan(0);
   });
 
-  it('names a Swagger 2.0 source and says only 3.x is supported', async () => {
+  it('converts a Swagger 2.0 source and reports a warning', async () => {
     const result = await runPipeline(
       'sources:\n  - name: legacy\n    path: old.yaml\n',
       [{ name: 'old.yaml', content: "swagger: '2.0'\ninfo: {title: Old, version: '1'}\npaths: {}\n" }],
       deps(),
     );
+    expect(result.text).toContain('openapi: 3.0.3');
+    expect(result.problems).toEqual([
+      expect.objectContaining({ level: 'warning', kind: 'merge', message: expect.stringContaining("source 'legacy': converted from Swagger 2.0") }),
+    ]);
+  });
+
+  it('rejects Swagger 1.x sources by name', async () => {
+    const result = await runPipeline(
+      'sources:\n  - name: ancient\n    path: old.yaml\n',
+      [{ name: 'old.yaml', content: "swagger: '1.2'\ninfo: {title: Old, version: '1'}\n" }],
+      deps(),
+    );
     expect(result.text).toBeNull();
-    expect(result.problems[0]).toMatchObject({ kind: 'merge' });
-    expect(result.problems[0].message).toMatch(/legacy/);
-    expect(result.problems[0].message).toMatch(/only OpenAPI 3\.x/);
+    expect(result.problems[0].message).toMatch(/ancient/);
+    expect(result.problems[0].message).toMatch(/Swagger 1\.x/);
   });
 
   it('turns merge warnings into warning problems while keeping output', async () => {
