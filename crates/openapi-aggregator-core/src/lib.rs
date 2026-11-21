@@ -35,6 +35,7 @@
 //! assert!(merged["paths"]["/orders"].is_object());
 //! ```
 
+pub mod bundle;
 pub mod config;
 pub mod error;
 pub mod merge;
