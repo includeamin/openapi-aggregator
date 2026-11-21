@@ -38,7 +38,7 @@ pub fn resolve_location(base: &str, reference: &str) -> String {
         return reference.to_string();
     }
     let dir = &base[..base.rfind('/').map_or(0, |i| i + 1)];
-    normalize(&format!("{dir}{reference}"), false)
+    normalize(&format!("{dir}{reference}"), base.starts_with('/'))
 }
 
 /// `("https://host:80", "/path")` for an absolute URL.
@@ -585,6 +585,22 @@ mod tests {
             "https://b.test/x.yaml"
         );
         assert_eq!(resolve_location("specs/pets.yaml", ""), "specs/pets.yaml");
+    }
+
+    #[test]
+    fn absolute_file_bases_stay_absolute() {
+        assert_eq!(
+            resolve_location("/tmp/x/openapi.yaml", "./schemas/pet.yaml"),
+            "/tmp/x/schemas/pet.yaml"
+        );
+        assert_eq!(
+            resolve_location("/tmp/x/openapi.yaml", "../y/d.yaml"),
+            "/tmp/y/d.yaml"
+        );
+        assert_eq!(
+            resolve_location("/tmp/x/openapi.yaml", "../../../../d.yaml"),
+            "/d.yaml"
+        );
     }
 
     #[test]
