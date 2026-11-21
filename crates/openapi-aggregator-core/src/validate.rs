@@ -3,6 +3,8 @@
 //!
 //! This is deliberately not a full structural validation against the OpenAPI JSON Schema.
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::Value;
 
 /// How serious a [`Finding`] is.
@@ -62,6 +64,8 @@ pub fn validate(spec: &Value) -> Vec<Finding> {
         check_component_names(spec, &mut out);
         check_operations(spec, &mut out);
         check_refs(spec, &mut out);
+        check_operation_ids(spec, &mut out);
+        check_paths(spec, &mut out);
     }
     out.sort_by(|a, b| (&a.location, a.code).cmp(&(&b.location, b.code)));
     out
@@ -190,6 +194,179 @@ fn check_refs(spec: &Value, out: &mut Vec<Finding>) {
             ));
         }
     });
+}
+
+fn check_operation_ids(spec: &Value, out: &mut Vec<Finding>) {
+    let mut seen: HashMap<&str, (&str, &str)> = HashMap::new();
+    for (path, method, op) in operations(spec) {
+        let Some(id) = op.get("operationId").and_then(Value::as_str) else {
+            continue;
+        };
+        match seen.get(id) {
+            Some((first_path, first_method)) => out.push(error(
+                "duplicate-operation-id",
+                format!(
+                    "operationId '{id}' is already used by {} {first_path}",
+                    first_method.to_uppercase()
+                ),
+                operation_pointer(path, method),
+            )),
+            None => {
+                seen.insert(id, (path, method));
+            }
+        }
+    }
+}
+
+/// Names of the `{param}` placeholders in a path template.
+fn template_params(path: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else { break };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    names
+}
+
+/// The path template with every placeholder name erased, for ambiguity detection.
+fn template_shape(path: &str) -> String {
+    let mut shape = String::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('{') {
+        shape.push_str(&rest[..start]);
+        match rest[start..].find('}') {
+            Some(end) => {
+                shape.push_str("{}");
+                rest = &rest[start + end + 1..];
+            }
+            None => {
+                shape.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    shape.push_str(rest);
+    shape
+}
+
+/// `(name, in)` of each entry of a `parameters` array, resolving internal `$ref`s once.
+fn parameter_keys(spec: &Value, parameters: Option<&Value>) -> Vec<(String, String)> {
+    let Some(Value::Array(list)) = parameters else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|p| {
+            let resolved = match p.get("$ref").and_then(Value::as_str) {
+                Some(reference) => {
+                    let pointer = reference.strip_prefix('#')?;
+                    crate::bundle::lookup(spec, &crate::bundle::decode_pointer(pointer))?
+                }
+                None => p,
+            };
+            Some((
+                resolved.get("name")?.as_str()?.to_string(),
+                resolved.get("in")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn duplicates(keys: &[(String, String)]) -> Vec<&(String, String)> {
+    let mut seen = HashSet::new();
+    keys.iter().filter(|k| !seen.insert(*k)).collect()
+}
+
+fn check_paths(spec: &Value, out: &mut Vec<Finding>) {
+    let Some(Value::Object(paths)) = spec.get("paths") else {
+        return;
+    };
+    let mut shapes: HashMap<String, &str> = HashMap::new();
+    for (path, item) in paths {
+        let item_pointer = format!("/paths/{}", pointer_escape(path));
+        match shapes.get(&template_shape(path)) {
+            Some(other) => out.push(error(
+                "ambiguous-paths",
+                format!("path '{path}' is equivalent to '{other}'"),
+                item_pointer.clone(),
+            )),
+            None => {
+                shapes.insert(template_shape(path), path);
+            }
+        }
+
+        let template = template_params(path);
+        let item_params = parameter_keys(spec, item.get("parameters"));
+        let ops: Vec<(&str, &Value)> = crate::swagger2::METHODS
+            .iter()
+            .filter_map(|m| item.get(*m).map(|op| (*m, op)))
+            .collect();
+
+        report_duplicates(&item_params, &item_pointer, out);
+        report_unused(&item_params, &template, path, &item_pointer, out);
+        if ops.is_empty() {
+            report_undeclared(&item_params, &template, path, &item_pointer, out);
+        }
+        for (method, op) in ops {
+            let pointer = operation_pointer(path, method);
+            let op_params = parameter_keys(spec, op.get("parameters"));
+            report_duplicates(&op_params, &pointer, out);
+            report_unused(&op_params, &template, path, &pointer, out);
+            let effective: Vec<(String, String)> =
+                item_params.iter().chain(&op_params).cloned().collect();
+            report_undeclared(&effective, &template, path, &pointer, out);
+        }
+    }
+}
+
+fn report_duplicates(keys: &[(String, String)], location: &str, out: &mut Vec<Finding>) {
+    for (name, location_in) in duplicates(keys) {
+        out.push(error(
+            "duplicate-parameter",
+            format!("parameter '{name}' (in: {location_in}) is declared more than once"),
+            location,
+        ));
+    }
+}
+
+fn report_unused(
+    keys: &[(String, String)],
+    template: &[&str],
+    path: &str,
+    location: &str,
+    out: &mut Vec<Finding>,
+) {
+    for (name, _) in keys
+        .iter()
+        .filter(|(n, i)| i == "path" && !template.contains(&n.as_str()))
+    {
+        out.push(finding(
+            Severity::Warning,
+            "unused-path-param",
+            format!("path parameter '{name}' does not appear in '{path}'"),
+            location,
+        ));
+    }
+}
+
+fn report_undeclared(
+    keys: &[(String, String)],
+    template: &[&str],
+    path: &str,
+    location: &str,
+    out: &mut Vec<Finding>,
+) {
+    for name in template {
+        if !keys.iter().any(|(n, i)| i == "path" && n == name) {
+            out.push(error(
+                "undeclared-path-param",
+                format!("'{{{name}}}' in '{path}' has no matching path parameter"),
+                location,
+            ));
+        }
+    }
 }
 
 fn check_operations(spec: &Value, out: &mut Vec<Finding>) {
@@ -404,5 +581,128 @@ mod tests {
                 "/components/schemas/S/properties/default".to_string()
             )]
         );
+    }
+
+    fn spec_with_paths(paths: Value) -> Value {
+        let mut spec = minimal();
+        spec["paths"] = paths;
+        spec
+    }
+
+    fn ok() -> Value {
+        json!({"200":{"description":"ok"}})
+    }
+
+    #[test]
+    fn duplicate_operation_id() {
+        let spec = spec_with_paths(json!({
+            "/a":{"get":{"operationId":"list","responses":ok()}},
+            "/b":{"get":{"operationId":"list","responses":ok()},"post":{"operationId":"create","responses":ok()}}
+        }));
+        let f = validate(&spec);
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].code, f[0].location.as_str()),
+            ("duplicate-operation-id", "/paths/~1b/get")
+        );
+        assert!(
+            f[0].message.contains("list") && f[0].message.contains("/a"),
+            "{}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn undeclared_path_param() {
+        let spec = spec_with_paths(json!({"/pets/{id}":{"get":{"responses":ok()}}}));
+        assert_eq!(
+            found(&spec),
+            vec![(
+                "undeclared-path-param",
+                Severity::Error,
+                "/paths/~1pets~1{id}/get".into()
+            )]
+        );
+
+        let at_item = spec_with_paths(json!({"/pets/{id}":{
+            "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],
+            "get":{"responses":ok()}}}));
+        assert!(validate(&at_item).is_empty());
+        let at_op = spec_with_paths(json!({"/pets/{id}":{"get":{
+            "parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}}}));
+        assert!(validate(&at_op).is_empty());
+
+        let mut by_ref = spec_with_paths(json!({"/pets/{id}":{"get":{
+            "parameters":[{"$ref":"#/components/parameters/Id"}],"responses":ok()}}}));
+        by_ref["components"] =
+            json!({"parameters":{"Id":{"name":"id","in":"path","required":true}}});
+        assert!(validate(&by_ref).is_empty());
+
+        let wrong_in = spec_with_paths(json!({"/pets/{id}":{"get":{
+            "parameters":[{"name":"id","in":"query"}],"responses":ok()}}}));
+        assert_eq!(
+            found(&wrong_in),
+            vec![(
+                "undeclared-path-param",
+                Severity::Error,
+                "/paths/~1pets~1{id}/get".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn unused_path_param_is_a_warning() {
+        let spec = spec_with_paths(json!({"/pets":{"get":{
+            "parameters":[{"name":"x","in":"path","required":true}],"responses":ok()}}}));
+        assert_eq!(
+            found(&spec),
+            vec![(
+                "unused-path-param",
+                Severity::Warning,
+                "/paths/~1pets/get".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn duplicate_parameter() {
+        let dup = spec_with_paths(json!({"/p":{"get":{"parameters":[
+            {"name":"q","in":"query"},{"name":"q","in":"query"}],"responses":ok()}}}));
+        assert_eq!(
+            found(&dup),
+            vec![(
+                "duplicate-parameter",
+                Severity::Error,
+                "/paths/~1p/get".into()
+            )]
+        );
+        let different_in = spec_with_paths(json!({"/p":{"get":{"parameters":[
+            {"name":"q","in":"query"},{"name":"q","in":"header"}],"responses":ok()}}}));
+        assert!(validate(&different_in).is_empty());
+        let overridden = spec_with_paths(json!({"/p":{
+            "parameters":[{"name":"q","in":"query"}],
+            "get":{"parameters":[{"name":"q","in":"query"}],"responses":ok()}}}));
+        assert!(validate(&overridden).is_empty());
+    }
+
+    #[test]
+    fn ambiguous_paths() {
+        let spec = spec_with_paths(json!({
+            "/a/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}},
+            "/a/{name}":{"get":{"parameters":[{"name":"name","in":"path","required":true}],"responses":ok()}}
+        }));
+        assert_eq!(
+            found(&spec),
+            vec![(
+                "ambiguous-paths",
+                Severity::Error,
+                "/paths/~1a~1{name}".into()
+            )]
+        );
+        let fine = spec_with_paths(json!({
+            "/a/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}},
+            "/b/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true}],"responses":ok()}}
+        }));
+        assert!(validate(&fine).is_empty());
     }
 }
