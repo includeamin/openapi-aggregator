@@ -1,10 +1,11 @@
 //! Browser bindings for openapi-aggregator. Fetching happens in JS;
 //! this crate only parses the config and merges already-loaded spec text.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use openapi_aggregator_core::{
-    merge_specs_with_report, prepare_source_with_notes, Config, Error, OutputFormat, Source,
+    bundle_source, check_document_cap, merge_specs_with_report, missing_documents, parse_content,
+    prepare_source_with_notes, Config, Error, OutputFormat, PreparedSource, Source,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -68,8 +69,48 @@ pub fn summarize_config(yaml: &str) -> Result<ConfigSummary, String> {
     })
 }
 
-pub fn aggregate_contents(yaml: &str, contents: Vec<String>) -> Result<AggregateOutput, String> {
-    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+/// A document a source references that has not been supplied yet.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingDocumentOut {
+    pub location: String,
+    pub referenced_from: String,
+}
+
+/// For each source, the external documents it still needs.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct PendingRefs {
+    pub sources: Vec<Vec<MissingDocumentOut>>,
+}
+
+/// Strip leading `./` so a config `path:` matches a workspace file name.
+fn workspace_key(path: &str) -> String {
+    let mut key = path;
+    while let Some(rest) = key.strip_prefix("./") {
+        key = rest;
+    }
+    key.to_string()
+}
+
+/// The location a source's relative `$ref`s are resolved against.
+fn base_of(source: &Source) -> String {
+    match source {
+        Source::File { path, .. } => workspace_key(&path.to_string_lossy()),
+        Source::Http { url, .. } => url.clone(),
+    }
+}
+
+fn parse_docs(docs: HashMap<String, String>) -> Result<HashMap<String, serde_json::Value>, String> {
+    docs.into_iter()
+        .map(|(location, text)| {
+            parse_content(&text)
+                .map(|value| (location.clone(), value))
+                .map_err(|e| format!("document '{location}': {e}"))
+        })
+        .collect()
+}
+
+fn prepare_all(config: &Config, contents: &[String]) -> Result<Vec<PreparedSource>, String> {
     if config.sources.is_empty() {
         return Err(Error::NoSources.to_string());
     }
@@ -80,14 +121,60 @@ pub fn aggregate_contents(yaml: &str, contents: Vec<String>) -> Result<Aggregate
             contents.len()
         ));
     }
+    config
+        .sources
+        .iter()
+        .zip(contents)
+        .map(|(source, content)| {
+            prepare_source_with_notes(content, source).map_err(|e| match e {
+                Error::Parse(_) => format!("source '{}': {e}", source.display_name()),
+                other => other.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// For each source, the external documents (by location) still missing from `docs`.
+pub fn pending_refs(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: HashMap<String, String>,
+) -> Result<PendingRefs, String> {
+    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    let prepared = prepare_all(&config, &contents)?;
+    let docs = parse_docs(docs)?;
+    let sources = config
+        .sources
+        .iter()
+        .zip(&prepared)
+        .map(|(source, p)| {
+            missing_documents(&p.spec, &base_of(source), &docs)
+                .into_iter()
+                .map(|m| MissingDocumentOut {
+                    location: m.location,
+                    referenced_from: m.referenced_from,
+                })
+                .collect()
+        })
+        .collect();
+    Ok(PendingRefs { sources })
+}
+
+pub fn aggregate_contents(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: HashMap<String, String>,
+) -> Result<AggregateOutput, String> {
+    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    let prepared = prepare_all(&config, &contents)?;
+    let docs = parse_docs(docs)?;
 
     let mut notes = Vec::new();
     let mut specs = Vec::new();
-    for (source, content) in config.sources.iter().zip(&contents) {
-        let prepared = prepare_source_with_notes(content, source).map_err(|e| match e {
-            Error::Parse(_) => format!("source '{}': {e}", source.display_name()),
-            other => other.to_string(),
-        })?;
+    for (source, prepared) in config.sources.iter().zip(prepared) {
+        check_document_cap(docs.len(), &prepared.name).map_err(|e| e.to_string())?;
+        let prepared =
+            bundle_source(prepared, &base_of(source), &docs).map_err(|e| e.to_string())?;
         notes.extend(prepared.notes);
         specs.push((prepared.name, source.tag_prefix(), prepared.spec));
     }
@@ -119,11 +206,30 @@ pub fn parse_config(yaml: &str) -> Result<JsValue, JsError> {
     to_js(&summarize_config(yaml).map_err(|e| JsError::new(&e))?)
 }
 
-/// Merge already-loaded spec texts (`contents[i]` belongs to `sources[i]`);
-/// returns an `AggregateOutput` or throws.
+fn docs_from_js(docs: JsValue) -> Result<HashMap<String, String>, JsError> {
+    if docs.is_undefined() || docs.is_null() {
+        return Ok(HashMap::new());
+    }
+    serde_wasm_bindgen::from_value(docs)
+        .map_err(|e| JsError::new(&format!("invalid external documents: {e}")))
+}
+
+/// Which external documents each source still needs (`docs` maps location -> text);
+/// returns `PendingRefs` or throws.
+#[wasm_bindgen(js_name = pendingRefs)]
+pub fn pending_refs_js(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: JsValue,
+) -> Result<JsValue, JsError> {
+    to_js(&pending_refs(yaml, contents, docs_from_js(docs)?).map_err(|e| JsError::new(&e))?)
+}
+
+/// Merge already-loaded spec texts (`contents[i]` belongs to `sources[i]`), bundling
+/// external refs from `docs` (location -> text); returns an `AggregateOutput` or throws.
 #[wasm_bindgen]
-pub fn aggregate(yaml: &str, contents: Vec<String>) -> Result<JsValue, JsError> {
-    to_js(&aggregate_contents(yaml, contents).map_err(|e| JsError::new(&e))?)
+pub fn aggregate(yaml: &str, contents: Vec<String>, docs: JsValue) -> Result<JsValue, JsError> {
+    to_js(&aggregate_contents(yaml, contents, docs_from_js(docs)?).map_err(|e| JsError::new(&e))?)
 }
 
 #[cfg(test)]
@@ -169,6 +275,7 @@ mod tests {
         let out = aggregate_contents(
             "sources:\n  - path: pets.yaml\n  - path: users.yaml\n",
             vec![PETS.into(), USERS.into()],
+            Default::default(),
         )
         .unwrap();
         assert!(out.text.starts_with("openapi: 3.0.3"), "{}", out.text);
@@ -181,6 +288,7 @@ mod tests {
         let out = aggregate_contents(
             "sources:\n  - path: pets.yaml\noutput: {format: json}\n",
             vec![PETS.into()],
+            Default::default(),
         )
         .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out.text).unwrap();
@@ -189,14 +297,23 @@ mod tests {
 
     #[test]
     fn unparseable_content_names_the_source() {
-        let err = aggregate_contents("sources:\n  - path: pets.yaml\n", vec!["{: nope".into()])
-            .unwrap_err();
+        let err = aggregate_contents(
+            "sources:\n  - path: pets.yaml\n",
+            vec!["{: nope".into()],
+            Default::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("source 'pets'"), "{err}");
     }
 
     #[test]
     fn content_count_must_match_sources() {
-        let err = aggregate_contents("sources:\n  - path: pets.yaml\n", vec![]).unwrap_err();
+        let err = aggregate_contents(
+            "sources:\n  - path: pets.yaml\n",
+            vec![],
+            Default::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("expected 1"), "{err}");
     }
 
@@ -206,6 +323,7 @@ mod tests {
         let out = aggregate_contents(
             "sources:\n  - name: legacy\n    path: legacy.yaml\n  - path: pets.yaml\n",
             vec![legacy.into(), PETS.into()],
+            Default::default(),
         )
         .unwrap();
         assert!(out.text.contains("/legacy:") && out.text.contains("/pets:"));
@@ -216,5 +334,91 @@ mod tests {
             "{:?}",
             out.warnings
         );
+    }
+
+    const ROOT_WITH_REF: &str = "openapi: 3.0.3\ninfo: {title: Root, version: '1'}\npaths:\n  /p:\n    get:\n      responses:\n        '200':\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: './a.yaml#/Pet'\n";
+
+    fn docs(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn pending_refs_lists_missing_documents_per_source() {
+        let yaml = "sources:\n  - path: ./root.yaml\n  - path: pets.yaml\n";
+        let pending = pending_refs(
+            yaml,
+            vec![ROOT_WITH_REF.into(), PETS.into()],
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending.sources,
+            vec![
+                vec![MissingDocumentOut {
+                    location: "a.yaml".into(),
+                    referenced_from: "root.yaml".into()
+                }],
+                vec![]
+            ]
+        );
+
+        let a = "Pet:\n  properties:\n    t:\n      $ref: 'b.yaml#/T'\n";
+        let pending = pending_refs(
+            yaml,
+            vec![ROOT_WITH_REF.into(), PETS.into()],
+            docs(&[("a.yaml", a)]),
+        )
+        .unwrap();
+        assert_eq!(
+            pending.sources[0],
+            vec![MissingDocumentOut {
+                location: "b.yaml".into(),
+                referenced_from: "a.yaml".into()
+            }]
+        );
+
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(json["sources"][0][0]["referencedFrom"], "a.yaml");
+    }
+
+    #[test]
+    fn pending_refs_names_unparseable_documents() {
+        let err = pending_refs(
+            "sources:\n  - path: root.yaml\n",
+            vec![ROOT_WITH_REF.into()],
+            docs(&[("a.yaml", "{: nope")]),
+        )
+        .unwrap_err();
+        assert!(err.contains("a.yaml"), "{err}");
+    }
+
+    #[test]
+    fn aggregate_bundles_external_documents() {
+        let out = aggregate_contents(
+            "sources:\n  - path: root.yaml\n",
+            vec![ROOT_WITH_REF.into()],
+            docs(&[("a.yaml", "Pet:\n  type: object\n")]),
+        )
+        .unwrap();
+        assert!(
+            out.text.contains("components:") && out.text.contains("Pet:"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("a.yaml#"), "{}", out.text);
+    }
+
+    #[test]
+    fn aggregate_without_the_document_names_source_and_location() {
+        let err = aggregate_contents(
+            "sources:\n  - path: root.yaml\n",
+            vec![ROOT_WITH_REF.into()],
+            HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(err.contains("root") && err.contains("a.yaml"), "{err}");
     }
 }
