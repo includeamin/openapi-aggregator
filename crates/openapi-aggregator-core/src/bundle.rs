@@ -3,6 +3,10 @@
 //! Pure and I/O-free: front ends discover the documents a spec needs with
 //! [`missing_documents`], load them, and call [`bundle`].
 
+use std::collections::{HashMap, HashSet};
+
+use serde_json::Value;
+
 /// Whether `location` is an absolute `http(s)` URL.
 pub fn is_url(location: &str) -> bool {
     location.starts_with("http://") || location.starts_with("https://")
@@ -110,6 +114,97 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A document that a spec (transitively) references but that is not loaded yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDocument {
+    pub location: String,
+    pub referenced_from: String,
+}
+
+/// Keys whose children are user-chosen names, not OpenAPI keywords.
+const NAME_MAPS: [&str; 17] = [
+    "properties",
+    "patternProperties",
+    "definitions",
+    "$defs",
+    "schemas",
+    "parameters",
+    "responses",
+    "headers",
+    "examples",
+    "requestBodies",
+    "links",
+    "callbacks",
+    "securitySchemes",
+    "paths",
+    "content",
+    "encoding",
+    "mapping",
+];
+
+/// Keys that hold example data, not spec structure.
+const DATA_KEYS: [&str; 4] = ["example", "default", "enum", "value"];
+
+/// Visit every `$ref` string, skipping example/default/enum data.
+pub(crate) fn walk_refs(value: &Value, f: &mut dyn FnMut(&str)) {
+    walk(value, false, f);
+}
+
+fn walk(value: &Value, names: bool, f: &mut dyn FnMut(&str)) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if !names && DATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                match child {
+                    Value::String(target) if !names && key == "$ref" => f(target),
+                    _ => walk(child, !names && NAME_MAPS.contains(&key.as_str()), f),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| walk(item, false, f)),
+        _ => {}
+    }
+}
+
+/// The documents `spec` (located at `base`) needs, following references through the
+/// documents already in `docs`, that are not in `docs` yet. Deduplicated, in discovery order.
+pub fn missing_documents(
+    spec: &Value,
+    base: &str,
+    docs: &HashMap<String, Value>,
+) -> Vec<MissingDocument> {
+    let mut missing = Vec::new();
+    let mut seen_missing = HashSet::new();
+    let mut visited = HashSet::new();
+    visited.insert(base.to_string());
+    let mut queue: Vec<(String, &Value)> = vec![(base.to_string(), spec)];
+
+    while let Some((location, document)) = queue.pop() {
+        let mut found = Vec::new();
+        walk_refs(document, &mut |reference| {
+            let (doc_part, _) = split_ref(reference);
+            if !doc_part.is_empty() {
+                found.push(resolve_location(&location, doc_part));
+            }
+        });
+        for target in found {
+            if let Some(loaded) = docs.get(&target) {
+                if visited.insert(target.clone()) {
+                    queue.push((target, loaded));
+                }
+            } else if target != base && seen_missing.insert(target.clone()) {
+                missing.push(MissingDocument {
+                    location: target,
+                    referenced_from: location.clone(),
+                });
+            }
+        }
+    }
+    missing
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +284,52 @@ mod tests {
     fn is_url_detects_http_only() {
         assert!(is_url("https://a.test/x") && is_url("http://a.test/x"));
         assert!(!is_url("specs/a.yaml") && !is_url("file:///x"));
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn finds_missing_documents_transitively() {
+        let spec = json!({"a": {"$ref": "./schemas/pet.yaml#/Pet"}, "b": {"$ref": "#/components/schemas/Local"}});
+        let mut docs = HashMap::new();
+        assert_eq!(
+            missing_documents(&spec, "specs/pets.yaml", &docs),
+            vec![MissingDocument {
+                location: "specs/schemas/pet.yaml".into(),
+                referenced_from: "specs/pets.yaml".into()
+            }]
+        );
+
+        docs.insert("specs/schemas/pet.yaml".to_string(), json!({"Pet": {"$ref": "../common/err.yaml#/E"}, "Other": {"$ref": "../common/err.yaml#/F"}}));
+        assert_eq!(
+            missing_documents(&spec, "specs/pets.yaml", &docs),
+            vec![MissingDocument {
+                location: "specs/common/err.yaml".into(),
+                referenced_from: "specs/schemas/pet.yaml".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn ignores_own_location_and_example_data() {
+        let spec = json!({
+            "a": {"$ref": "pets.yaml#/x"},
+            "b": {"example": {"$ref": "other.yaml"}},
+            "c": {"properties": {"default": {"$ref": "real.yaml#/R"}, "example": {"$ref": "real2.yaml#/R"}}}
+        });
+        let missing: Vec<String> = missing_documents(&spec, "pets.yaml", &HashMap::new())
+            .into_iter()
+            .map(|m| m.location)
+            .collect();
+        assert_eq!(missing, vec!["real.yaml", "real2.yaml"]);
+    }
+
+    #[test]
+    fn circular_documents_terminate() {
+        let mut docs = HashMap::new();
+        docs.insert("a.yaml".to_string(), json!({"A": {"$ref": "b.yaml#/B"}}));
+        docs.insert("b.yaml".to_string(), json!({"B": {"$ref": "a.yaml#/A"}}));
+        let spec = json!({"$ref": "a.yaml#/A"});
+        assert!(missing_documents(&spec, "root.yaml", &docs).is_empty());
     }
 }
