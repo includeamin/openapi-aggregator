@@ -1,4 +1,4 @@
-import { aggregate, parseConfig } from './engine';
+import { aggregate, parseConfig, pendingRefs } from './engine';
 import { DEFAULT_EXAMPLE_ID, EXAMPLES, findExample, type Example } from './examples';
 import { latestOnly, runPipeline, type PipelineResult } from './pipeline';
 import { errorMessage, fetchText, guardLoader, memoizeLoader } from './resolve';
@@ -77,7 +77,7 @@ export async function startApp(): Promise<void> {
       () => remoteAllowed,
     );
   let load = newLoader();
-  const pipeline = latestOnly(() => runPipeline(state.config, state.files, { parseConfig, aggregate, load }));
+  const pipeline = latestOnly(() => runPipeline(state.config, state.files, { parseConfig, aggregate, pendingRefs, load }));
 
   const configEditor = createYamlEditor($('#config-editor'), '', (text) => {
     state.config = text;

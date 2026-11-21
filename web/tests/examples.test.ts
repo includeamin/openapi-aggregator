@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { aggregate, parseConfig } from '../src/engine';
+import { aggregate, parseConfig, pendingRefs } from '../src/engine';
+import { runPipeline } from '../src/pipeline';
 import { DEFAULT_EXAMPLE_ID, EXAMPLES, findExample } from '../src/examples';
 import { resolveSources } from '../src/resolve';
 import { loadEngineForTests } from './helpers';
@@ -27,12 +28,9 @@ describe('examples', () => {
     const usesNetwork = parseConfigSafe(example.config).some((s) => s.kind === 'url');
     const expectsWarnings = example.id === 'swagger2';
     it.skipIf(usesNetwork || expectsWarnings)(`${example.id}: merges without errors or warnings`, async () => {
-      const summary = parseConfig(example.config);
-      const { contents, problems } = await resolveSources(summary.sources, example.files, noNetwork);
-      expect(problems).toEqual([]);
-      const out = aggregate(example.config, contents!);
-      expect(out.warnings).toEqual([]);
-      expect(out.text.length).toBeGreaterThan(0);
+      const result = await runPipeline(example.config, example.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+      expect(result.problems).toEqual([]);
+      expect(result.text!.length).toBeGreaterThan(0);
     });
   }
 
@@ -54,6 +52,16 @@ describe('examples', () => {
     expect(out.text).toContain('openapi: 3.0.3');
     expect(out.text).toContain('requestBody:');
     expect(out.warnings.some((w) => w.includes('converted from Swagger 2.0'))).toBe(true);
+  });
+
+  it('multi-file example bundles refs from workspace files', async () => {
+    const ex = findExample('multi-file');
+    expect(ex.id).toBe('multi-file');
+    const result = await runPipeline(ex.config, ex.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+    expect(result.problems).toEqual([]);
+    expect(result.text).toContain('components:');
+    expect(result.text).toMatch(/\$ref: '#\/components\/schemas\/\w+'/);
+    expect(result.text).not.toMatch(/\.yaml#/);
   });
 
   it('per-operation example combines GET and POST on one path', async () => {

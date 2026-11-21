@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 
+use crate::bundle::bundle;
 use crate::config::Source;
 use crate::error::Error;
 use crate::merge::deep_merge;
@@ -31,6 +34,26 @@ pub fn prepare_source_with_notes(content: &str, source: &Source) -> Result<Prepa
         .map(|n| format!("source '{name}': {n}"))
         .collect();
     Ok(PreparedSource { name, spec, notes })
+}
+
+/// Bundle the external `$ref`s of a prepared source (see [`crate::bundle`]). `base` is the
+/// source's location; `docs` holds every document it references, already parsed.
+/// Notes are appended to the source's notes, prefixed with `source '<name>': `.
+pub fn bundle_source(
+    mut prepared: PreparedSource,
+    base: &str,
+    docs: &HashMap<String, Value>,
+) -> Result<PreparedSource, Error> {
+    let name = prepared.name.clone();
+    let (spec, notes) = bundle(prepared.spec, base, docs).map_err(|e| Error::InvalidSpec {
+        name: name.clone(),
+        reason: e.to_string(),
+    })?;
+    prepared.spec = spec;
+    prepared
+        .notes
+        .extend(notes.into_iter().map(|n| format!("source '{name}': {n}")));
+    Ok(prepared)
 }
 
 fn parse_and_prepare(content: &str, source: &Source) -> Result<(Value, Vec<String>), Error> {
@@ -264,5 +287,83 @@ mod tests {
         let base = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;
         let err = parse_and_prepare(base, &source).unwrap_err().to_string();
         assert!(err.contains("additional_blocks"));
+    }
+
+    fn docs_of(entries: Vec<(&str, Value)>) -> std::collections::HashMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    #[test]
+    fn bundle_source_bundles_and_prefixes_notes() {
+        let source = file_source("pets", None);
+        let prepared = prepare_source_with_notes(
+            r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{},
+                "components":{"schemas":{"Pet":{"type":"string"}}},
+                "x":{"schema":{"$ref":"m/pet.yaml#/Pet"}}}"#,
+            &source,
+        )
+        .unwrap();
+        let docs = docs_of(vec![("m/pet.yaml", json!({"Pet": {"type": "object"}}))]);
+        let bundled = bundle_source(prepared, "pets.yaml", &docs).unwrap();
+        assert_eq!(
+            bundled.spec["x"]["schema"]["$ref"],
+            "#/components/schemas/pet_Pet"
+        );
+        assert!(bundled
+            .notes
+            .iter()
+            .all(|n| n.starts_with("source 'pets': ")));
+        assert!(bundled.notes[0].contains("hoisted 'm/pet.yaml#/Pet'"));
+    }
+
+    #[test]
+    fn bundle_source_errors_name_the_source() {
+        let source = file_source("pets", None);
+        let prepared = prepare_source_with_notes(
+            r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{},"x":{"$ref":"d.yaml#/Nope"}}"#,
+            &source,
+        )
+        .unwrap();
+        let docs = docs_of(vec![("d.yaml", json!({}))]);
+        let err = bundle_source(prepared, "pets.yaml", &docs)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pets") && err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn swagger2_source_converts_then_bundles_external_definitions() {
+        let source = file_source("legacy", None);
+        let prepared = prepare_source_with_notes(
+            "swagger: '2.0'\ninfo: {title: T, version: '1'}\npaths:\n  /p:\n    get:\n      responses:\n        '200':\n          description: ok\n          schema:\n            $ref: defs.yaml#/definitions/Pet\n",
+            &source,
+        )
+        .unwrap();
+        let docs = docs_of(vec![(
+            "defs.yaml",
+            json!({"definitions": {"Pet": {"type": "object"}}}),
+        )]);
+        let bundled = bundle_source(prepared, "legacy.yaml", &docs).unwrap();
+        assert_eq!(
+            bundled.spec["paths"]["/p"]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/Pet"
+        );
+        assert_eq!(
+            bundled.spec["components"]["schemas"]["Pet"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn document_cap_allows_100_and_rejects_101() {
+        assert!(crate::bundle::check_document_cap(100, "x").is_ok());
+        let err = crate::bundle::check_document_cap(101, "x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("limit 100") && err.contains("x"), "{err}");
     }
 }

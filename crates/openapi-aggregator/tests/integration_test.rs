@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use openapi_aggregator::{
-    aggregate, aggregate_from_file, aggregate_with_report, load_source, merge_specs, Config,
-    ConflictStrategy, MergeConfig, Source,
+    aggregate, aggregate_from_file, aggregate_with_options, aggregate_with_report, load_config,
+    load_source, merge_specs, AggregateOptions, Config, ConflictStrategy, MergeConfig, Source,
 };
 
 fn fixtures() -> &'static Path {
@@ -495,4 +495,314 @@ async fn swagger2_source_merges_with_openapi3_and_refs_resolve() {
         let pointer = r.trim_start_matches('#');
         assert!(report.spec.pointer(pointer).is_some(), "dangling $ref {r}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// external $refs
+// ---------------------------------------------------------------------------
+
+const ROOT_SPEC: &str = "openapi: 3.0.3\ninfo: {title: Root, version: '1'}\npaths:\n  /pets:\n    get:\n      responses:\n        '200':\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: REF\n";
+
+fn root_spec(reference: &str) -> String {
+    ROOT_SPEC.replace("REF", &format!("'{reference}'"))
+}
+
+fn write(path: &std::path::Path, content: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
+/// Aggregate the config at `dir/cfg.yaml` with default options (sandboxed) or with the escape hatch.
+async fn run_config(
+    dir: &std::path::Path,
+    allow_outside: bool,
+) -> Result<openapi_aggregator::MergeReport, openapi_aggregator::Error> {
+    let config = load_config(&dir.join("cfg.yaml")).unwrap();
+    let options = AggregateOptions {
+        allow_outside_config_dir: allow_outside,
+        config_dir: Some(dir.to_path_buf()),
+    };
+    aggregate_with_options(&config, &options).await
+}
+
+fn assert_refs_resolve(spec: &serde_json::Value) {
+    let mut refs = Vec::new();
+    collect_refs(spec, &mut refs);
+    assert!(!refs.is_empty());
+    for r in refs {
+        assert!(
+            spec.pointer(r.trim_start_matches('#')).is_some(),
+            "dangling $ref {r}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn multi_file_spec_merges_and_refs_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(
+        &dir.path().join("openapi.yaml"),
+        &root_spec("./schemas/pet.yaml#/Pet"),
+    );
+    write(
+        &dir.path().join("schemas/pet.yaml"),
+        "Pet:\n  type: object\n  properties:\n    owner:\n      $ref: './owner.yaml#/Owner'\n",
+    );
+    write(
+        &dir.path().join("schemas/owner.yaml"),
+        "Owner:\n  type: string\n",
+    );
+
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_refs_resolve(&report.spec);
+    assert_eq!(
+        report.spec["components"]["schemas"]["Owner"]["type"],
+        "string"
+    );
+}
+
+#[tokio::test]
+async fn ref_outside_config_dir_is_rejected_unless_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    write(
+        &cfg.join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(&cfg.join("openapi.yaml"), &root_spec("../outside.yaml#/X"));
+    write(&dir.path().join("outside.yaml"), "X:\n  type: string\n");
+
+    let err = run_config(&cfg, false).await.unwrap_err().to_string();
+    assert!(err.contains("is outside the config directory"), "{err}");
+    assert!(err.contains("--allow-outside-config-dir"), "{err}");
+
+    let report = run_config(&cfg, true).await.unwrap();
+    assert_eq!(report.spec["components"]["schemas"]["X"]["type"], "string");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_escape_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    write(
+        &cfg.join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(&cfg.join("openapi.yaml"), &root_spec("./link.yaml#/X"));
+    write(&dir.path().join("outside.yaml"), "X:\n  type: string\n");
+    std::os::unix::fs::symlink(dir.path().join("outside.yaml"), cfg.join("link.yaml")).unwrap();
+
+    let err = run_config(&cfg, false).await.unwrap_err().to_string();
+    assert!(err.contains("is outside the config directory"), "{err}");
+}
+
+#[tokio::test]
+async fn absolute_path_ref_outside_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    let outside = dir.path().join("outside.yaml");
+    write(&outside, "X:\n  type: string\n");
+    write(
+        &cfg.join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(
+        &cfg.join("openapi.yaml"),
+        &root_spec(&format!("{}#/X", outside.display())),
+    );
+
+    let err = run_config(&cfg, false).await.unwrap_err().to_string();
+    assert!(err.contains("is outside the config directory"), "{err}");
+}
+
+#[tokio::test]
+async fn source_outside_config_dir_may_reference_its_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    write(
+        &cfg.join("cfg.yaml"),
+        "sources:\n  - name: shared\n    path: ../shared/spec.yaml\n",
+    );
+    write(
+        &dir.path().join("shared/spec.yaml"),
+        &root_spec("./defs.yaml#/Def"),
+    );
+    write(
+        &dir.path().join("shared/defs.yaml"),
+        "Def:\n  type: string\n",
+    );
+
+    let report = run_config(&cfg, false).await.unwrap();
+    assert_eq!(
+        report.spec["components"]["schemas"]["Def"]["type"],
+        "string"
+    );
+}
+
+#[tokio::test]
+async fn missing_ref_file_names_source_and_referrer() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(
+        &dir.path().join("openapi.yaml"),
+        &root_spec("./nope.yaml#/X"),
+    );
+
+    let err = run_config(dir.path(), false).await.unwrap_err().to_string();
+    assert!(
+        err.contains("pets") && err.contains("nope.yaml") && err.contains("openapi.yaml"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn too_many_external_documents_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - name: pets\n    path: openapi.yaml\n",
+    );
+    write(&dir.path().join("openapi.yaml"), &root_spec("./d1.yaml#/D"));
+    for i in 1..=101 {
+        write(
+            &dir.path().join(format!("d{i}.yaml")),
+            &format!(
+                "D:\n  properties:\n    n:\n      $ref: './d{}.yaml#/D'\n",
+                i + 1
+            ),
+        );
+    }
+    let err = run_config(dir.path(), false).await.unwrap_err().to_string();
+    assert!(err.contains("limit 100"), "{err}");
+}
+
+fn spec_json(reference: &str) -> String {
+    serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {"title": "Remote", "version": "1"},
+        "paths": {"/r": {"get": {"responses": {"200": {"description": "ok",
+            "content": {"application/json": {"schema": {"$ref": reference}}}}}}}}
+    })
+    .to_string()
+}
+
+fn http_config(url: String, headers: &[(&str, &str)]) -> Config {
+    Config {
+        sources: vec![Source::Http {
+            name: Some("remote".into()),
+            url,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            tag_prefix: None,
+            additional_blocks: None,
+        }],
+        output: Default::default(),
+        merge: MergeConfig::default(),
+    }
+}
+
+#[tokio::test]
+async fn url_source_resolves_relative_refs_over_http() {
+    let mut server = mockito::Server::new_async().await;
+    let _spec = server
+        .mock("GET", "/api/spec.json")
+        .with_body(spec_json("defs.yaml#/Def"))
+        .create_async()
+        .await;
+    let _defs = server
+        .mock("GET", "/api/defs.yaml")
+        .with_body("Def:\n  type: string\n")
+        .create_async()
+        .await;
+
+    let config = http_config(format!("{}/api/spec.json", server.url()), &[]);
+    let report = aggregate_with_options(&config, &AggregateOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.spec["components"]["schemas"]["Def"]["type"],
+        "string"
+    );
+}
+
+#[tokio::test]
+async fn headers_are_only_sent_to_the_same_origin() {
+    let mut a = mockito::Server::new_async().await;
+    let mut b = mockito::Server::new_async().await;
+    let reference = format!("{}/x.yaml#/Foreign", b.url());
+    let _spec = a
+        .mock("GET", "/spec.json")
+        .match_header("Authorization", "Bearer t")
+        .with_body(spec_json("./local.yaml#/Local"))
+        .create_async()
+        .await;
+    let _spec2 = a
+        .mock("GET", "/spec2.json")
+        .match_header("Authorization", "Bearer t")
+        .with_body(spec_json(&reference))
+        .create_async()
+        .await;
+    let _local = a
+        .mock("GET", "/local.yaml")
+        .match_header("Authorization", "Bearer t")
+        .with_body("Local:\n  type: string\n")
+        .create_async()
+        .await;
+    let foreign = b
+        .mock("GET", "/x.yaml")
+        .match_header("Authorization", mockito::Matcher::Missing)
+        .with_body("Foreign:\n  type: integer\n")
+        .create_async()
+        .await;
+
+    let same = http_config(
+        format!("{}/spec.json", a.url()),
+        &[("Authorization", "Bearer t")],
+    );
+    let report = aggregate_with_options(&same, &AggregateOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.spec["components"]["schemas"]["Local"]["type"],
+        "string"
+    );
+
+    let cross = http_config(
+        format!("{}/spec2.json", a.url()),
+        &[("Authorization", "Bearer t")],
+    );
+    let report = aggregate_with_options(&cross, &AggregateOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.spec["components"]["schemas"]["Foreign"]["type"],
+        "integer"
+    );
+    foreign.assert_async().await;
+}
+
+#[tokio::test]
+async fn url_source_cannot_read_local_files() {
+    let mut server = mockito::Server::new_async().await;
+    let _spec = server
+        .mock("GET", "/spec.json")
+        .with_body(spec_json("file:///etc/hostname#/x"))
+        .create_async()
+        .await;
+    let config = http_config(format!("{}/spec.json", server.url()), &[]);
+    let err = aggregate_with_options(&config, &AggregateOptions::default())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("file:"), "{err}");
 }

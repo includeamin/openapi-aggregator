@@ -1,5 +1,5 @@
 import { workspaceKey } from './workspace';
-import type { Problem, ProblemKind, Settings, SourceSummary, WorkspaceFile } from './types';
+import type { MissingDocument, Problem, ProblemKind, Settings, SourceSummary, WorkspaceFile } from './types';
 
 export type Loader = (url: string, headers: Record<string, string>) => Promise<string>;
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
@@ -110,4 +110,57 @@ export async function resolveSources(
   const problems = results.flatMap((r) => ('problem' in r ? [r.problem] : []));
   if (problems.length) return { contents: null, problems };
   return { contents: results.map((r) => (r as { content: string }).content), problems };
+}
+
+export interface WantedDocument extends MissingDocument {
+  /** The source whose spec (transitively) needs this document. */
+  source: SourceSummary;
+}
+
+function originOf(url: string): string | null {
+  const match = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Load external documents: workspace files by key, `http(s)` URLs through `load`. A source's
+ * headers are only sent to its own origin. Every failure becomes a problem (none are thrown).
+ */
+export async function resolveDocuments(
+  wanted: WantedDocument[],
+  files: WorkspaceFile[],
+  load: Loader,
+): Promise<{ docs: Record<string, string>; problems: Problem[] }> {
+  const results = await Promise.all(
+    wanted.map(async ({ location, referencedFrom, source }): Promise<{ location: string; text: string } | { problem: Problem }> => {
+      try {
+        if (/^https?:\/\//i.test(location)) {
+          const sameOrigin = source.kind === 'url' && originOf(source.url ?? '') === originOf(location);
+          return { location, text: await load(location, sameOrigin ? source.headers : {}) };
+        }
+        if (/^file:/i.test(location)) {
+          throw new SourceError('missing-file', `'${location}' (referenced from '${referencedFrom}'): file: references are not supported.`);
+        }
+        const key = workspaceKey(location);
+        const file = files.find((f) => workspaceKey(f.name) === key);
+        if (!file) {
+          throw new SourceError(
+            'missing-file',
+            `No workspace file named '${key}' (referenced from '${referencedFrom}'). Add it to the workspace with exactly that name.`,
+          );
+        }
+        return { location, text: file.content };
+      } catch (e) {
+        const kind = e instanceof SourceError ? e.kind : 'http';
+        return { problem: { level: 'error', kind, source: source.name, message: errorMessage(e) } };
+      }
+    }),
+  );
+  const docs: Record<string, string> = {};
+  const problems: Problem[] = [];
+  for (const r of results) {
+    if ('problem' in r) problems.push(r.problem);
+    else docs[r.location] = r.text;
+  }
+  return { docs, problems };
 }

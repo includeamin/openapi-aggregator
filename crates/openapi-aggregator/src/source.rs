@@ -7,6 +7,8 @@ use openapi_aggregator_core::{
 
 use crate::error::Error;
 
+/// Load and prepare one source. External `$ref`s are left as they are; they are bundled by
+/// [`aggregate_with_options`](crate::aggregate_with_options).
 pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
     let prepared = load_source_with_client(source, &http_client()?).await?;
     Ok((prepared.name, prepared.spec))
@@ -62,7 +64,7 @@ pub(crate) async fn load_source_with_client(
 }
 
 /// Replace `${NAME}` placeholders with environment variables.
-fn expand_env(text: &str) -> Result<String, Error> {
+pub(crate) fn expand_env(text: &str) -> Result<String, Error> {
     expand_env_with(text, |name| std::env::var(name).ok())
 }
 
