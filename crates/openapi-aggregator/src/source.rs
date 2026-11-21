@@ -1,12 +1,15 @@
 use serde_json::Value;
 use std::time::Duration;
 
-use openapi_aggregator_core::{prepare_source, Error as CoreError, Source};
+use openapi_aggregator_core::{
+    prepare_source_with_notes, Error as CoreError, PreparedSource, Source,
+};
 
 use crate::error::Error;
 
 pub async fn load_source(source: &Source) -> Result<(String, Value), Error> {
-    load_source_with_client(source, &http_client()?).await
+    let prepared = load_source_with_client(source, &http_client()?).await?;
+    Ok((prepared.name, prepared.spec))
 }
 
 pub(crate) fn http_client() -> Result<reqwest::Client, Error> {
@@ -23,7 +26,7 @@ pub(crate) fn http_client() -> Result<reqwest::Client, Error> {
 pub(crate) async fn load_source_with_client(
     source: &Source,
     client: &reqwest::Client,
-) -> Result<(String, Value), Error> {
+) -> Result<PreparedSource, Error> {
     let content = match source {
         Source::File { path, .. } => {
             tokio::fs::read_to_string(path)
@@ -55,7 +58,7 @@ pub(crate) async fn load_source_with_client(
         }
     };
 
-    Ok(prepare_source(&content, source)?)
+    Ok(prepare_source_with_notes(&content, source)?)
 }
 
 /// Replace `${NAME}` placeholders with environment variables.

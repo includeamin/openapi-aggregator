@@ -47,4 +47,4 @@ pub use config::{
 };
 pub use error::Error;
 pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
-pub use prepare::{parse_content, prepare_source};
+pub use prepare::{parse_content, prepare_source, prepare_source_with_notes, PreparedSource};

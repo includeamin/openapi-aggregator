@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use openapi_aggregator_core::{
-    merge_specs_with_report, prepare_source, Config, Error, OutputFormat, Source,
+    merge_specs_with_report, prepare_source_with_notes, Config, Error, OutputFormat, Source,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -81,20 +81,20 @@ pub fn aggregate_contents(yaml: &str, contents: Vec<String>) -> Result<Aggregate
         ));
     }
 
-    let specs = config
-        .sources
-        .iter()
-        .zip(&contents)
-        .map(|(source, content)| {
-            let (name, spec) = prepare_source(content, source).map_err(|e| match e {
-                Error::Parse(_) => format!("source '{}': {e}", source.display_name()),
-                other => other.to_string(),
-            })?;
-            Ok((name, source.tag_prefix(), spec))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let mut notes = Vec::new();
+    let mut specs = Vec::new();
+    for (source, content) in config.sources.iter().zip(&contents) {
+        let prepared = prepare_source_with_notes(content, source).map_err(|e| match e {
+            Error::Parse(_) => format!("source '{}': {e}", source.display_name()),
+            other => other.to_string(),
+        })?;
+        notes.extend(prepared.notes);
+        specs.push((prepared.name, source.tag_prefix(), prepared.spec));
+    }
 
-    let report = merge_specs_with_report(specs, &config.merge).map_err(|e| e.to_string())?;
+    let mut report = merge_specs_with_report(specs, &config.merge).map_err(|e| e.to_string())?;
+    notes.append(&mut report.warnings);
+    report.warnings = notes;
     let text = match config.output.format {
         OutputFormat::Yaml => serde_yaml::to_string(&report.spec).map_err(|e| e.to_string())?,
         OutputFormat::Json => {
@@ -198,5 +198,23 @@ mod tests {
     fn content_count_must_match_sources() {
         let err = aggregate_contents("sources:\n  - path: pets.yaml\n", vec![]).unwrap_err();
         assert!(err.contains("expected 1"), "{err}");
+    }
+
+    #[test]
+    fn swagger2_sources_are_converted_with_a_warning() {
+        let legacy = "swagger: '2.0'\ninfo: {title: Legacy, version: '1'}\npaths:\n  /legacy:\n    get:\n      responses:\n        '200': {description: ok}\n";
+        let out = aggregate_contents(
+            "sources:\n  - name: legacy\n    path: legacy.yaml\n  - path: pets.yaml\n",
+            vec![legacy.into(), PETS.into()],
+        )
+        .unwrap();
+        assert!(out.text.contains("/legacy:") && out.text.contains("/pets:"));
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("source 'legacy': converted from Swagger 2.0")),
+            "{:?}",
+            out.warnings
+        );
     }
 }
