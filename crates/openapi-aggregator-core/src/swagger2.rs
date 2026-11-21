@@ -32,6 +32,31 @@ pub fn convert(spec: Value) -> (Value, Vec<String>) {
         components.insert("responses".into(), responses);
     }
 
+    let root_consumes = string_list(root.remove("consumes"));
+    root.remove("produces");
+
+    let top_params = match root.remove("parameters") {
+        Some(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    let mut ctx = Ctx {
+        top_params: &top_params,
+        root_consumes: &root_consumes,
+        notes: &mut notes,
+    };
+    let (params, bodies) = ctx.convert_top_level_parameters();
+    if !params.is_empty() {
+        components.insert("parameters".into(), Value::Object(params));
+    }
+    if !bodies.is_empty() {
+        components.insert("requestBodies".into(), Value::Object(bodies));
+    }
+    if let Some(Value::Object(paths)) = root.get_mut("paths") {
+        for (path, item) in paths.iter_mut() {
+            ctx.convert_path_item(path, item);
+        }
+    }
+
     for (key, value) in root {
         out.insert(key, value);
     }
@@ -42,6 +67,344 @@ pub fn convert(spec: Value) -> (Value, Vec<String>) {
     let mut out = Value::Object(out);
     rewrite_refs(&mut out);
     (out, notes)
+}
+
+const METHODS: [&str; 8] = [
+    "get", "put", "post", "delete", "options", "head", "patch", "trace",
+];
+
+/// Keys of a Swagger 2.0 non-body parameter that belong in the 3.0 `schema`.
+const SCHEMA_KEYS: [&str; 14] = [
+    "type",
+    "format",
+    "items",
+    "enum",
+    "default",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minItems",
+    "maxItems",
+];
+
+fn string_list(value: Option<Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A classified Swagger 2.0 parameter.
+enum Param {
+    /// Non-body, non-form: stays a parameter (already converted or a `$ref`).
+    Plain(Value),
+    /// `in: body`: the finished 3.0 `requestBody`.
+    Body(Value),
+    /// `in: formData`: the raw 2.0 parameter.
+    Form(Map<String, Value>),
+}
+
+struct Ctx<'a> {
+    top_params: &'a Map<String, Value>,
+    root_consumes: &'a [String],
+    notes: &'a mut Vec<String>,
+}
+
+impl Ctx<'_> {
+    fn convert_top_level_parameters(&mut self) -> (Map<String, Value>, Map<String, Value>) {
+        let mut params = Map::new();
+        let mut bodies = Map::new();
+        for (name, raw) in self.top_params {
+            match self.classify(raw.clone(), &[], "") {
+                Param::Plain(p) => {
+                    params.insert(name.clone(), p);
+                }
+                Param::Body(b) => {
+                    bodies.insert(name.clone(), b);
+                }
+                Param::Form(_) => {}
+            }
+        }
+        (params, bodies)
+    }
+
+    fn classify(&mut self, raw: Value, consumes: &[String], ctx_label: &str) -> Param {
+        let Value::Object(mut map) = raw else {
+            return Param::Plain(raw);
+        };
+        if let Some(Value::String(target)) = map.get("$ref") {
+            let referenced = target
+                .strip_prefix("#/parameters/")
+                .and_then(|name| self.top_params.get(name).map(|p| (name.to_string(), p)));
+            if let Some((name, Value::Object(p))) = referenced {
+                match p.get("in").and_then(Value::as_str) {
+                    Some("body") => {
+                        return Param::Body(
+                            serde_json::json!({"$ref": format!("#/components/requestBodies/{name}")}),
+                        )
+                    }
+                    Some("formData") => return Param::Form(p.clone()),
+                    _ => {}
+                }
+            }
+            return Param::Plain(Value::Object(map));
+        }
+        match map.get("in").and_then(Value::as_str) {
+            Some("body") => {
+                let consumes = if consumes.is_empty() {
+                    self.root_consumes
+                } else {
+                    consumes
+                };
+                Param::Body(build_request_body(map, consumes))
+            }
+            Some("formData") => Param::Form(map),
+            _ => {
+                self.convert_plain_parameter(&mut map, ctx_label);
+                Param::Plain(Value::Object(map))
+            }
+        }
+    }
+
+    /// Move schema-ish keys into `schema` and map `collectionFormat` to `style`/`explode`.
+    fn convert_plain_parameter(&mut self, param: &mut Map<String, Value>, ctx_label: &str) {
+        let mut schema = take_schema_keys(param);
+        self.strip_nested_collection_format(&mut schema, ctx_label);
+        let location = param
+            .get("in")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let collection = param
+            .remove("collectionFormat")
+            .and_then(|v| v.as_str().map(String::from));
+        if schema.get("type").and_then(Value::as_str) == Some("array") {
+            let format = collection.as_deref().unwrap_or("csv");
+            let style = match (format, location.as_str()) {
+                ("csv", "query" | "cookie") => Some(("form", false)),
+                ("csv", "path" | "header") => Some(("simple", false)),
+                ("multi", "query") => Some(("form", true)),
+                ("ssv", "query") => Some(("spaceDelimited", false)),
+                ("pipes", "query") => Some(("pipeDelimited", false)),
+                _ => None,
+            };
+            match style {
+                Some((style, explode)) => {
+                    param.insert("style".into(), style.into());
+                    param.insert("explode".into(), explode.into());
+                }
+                None => self.notes.push(format!(
+                    "collectionFormat '{format}' is not supported in OpenAPI 3; dropped"
+                )),
+            }
+        }
+        let mut schema = Value::Object(schema);
+        fix_schema(&mut schema);
+        param.insert("schema".into(), schema);
+    }
+
+    fn strip_nested_collection_format(&mut self, schema: &mut Map<String, Value>, ctx_label: &str) {
+        let mut current = schema.get_mut("items");
+        while let Some(Value::Object(items)) = current {
+            if items.remove("collectionFormat").is_some() {
+                self.notes.push(format!(
+                    "collectionFormat on nested array items{ctx_label} is not supported in OpenAPI 3; dropped"
+                ));
+            }
+            current = items.get_mut("items");
+        }
+    }
+
+    fn convert_path_item(&mut self, path: &str, item: &mut Value) {
+        let Value::Object(item) = item else { return };
+
+        let path_params: Vec<Param> = match item.remove("parameters") {
+            Some(Value::Array(list)) => list
+                .into_iter()
+                .map(|p| self.classify(p, &[], &format!(" on {path}")))
+                .collect(),
+            Some(other) => {
+                item.insert("parameters".into(), other);
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        let mut shared_plain = Vec::new();
+        let mut shared_body_form = Vec::new();
+        for p in path_params {
+            match p {
+                Param::Plain(v) => shared_plain.push(v),
+                other => shared_body_form.push(other),
+            }
+        }
+        if !shared_plain.is_empty() {
+            item.insert("parameters".into(), Value::Array(shared_plain));
+        }
+
+        for method in METHODS {
+            if let Some(Value::Object(op)) = item.get_mut(method) {
+                let label = format!("{} {path}", method.to_uppercase());
+                self.convert_operation(&label, op, &mut shared_body_form);
+            }
+        }
+    }
+
+    fn convert_operation(
+        &mut self,
+        label: &str,
+        op: &mut Map<String, Value>,
+        shared_body_form: &mut Vec<Param>,
+    ) {
+        let consumes = string_list(op.remove("consumes"));
+        let own: Vec<Param> = match op.remove("parameters") {
+            Some(Value::Array(list)) => list
+                .into_iter()
+                .map(|p| self.classify(p, &consumes, &format!(" on {label}")))
+                .collect(),
+            Some(other) => {
+                op.insert("parameters".into(), other);
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        let mut plain = Vec::new();
+        let mut bodies = Vec::new();
+        let mut forms = Vec::new();
+        for p in own {
+            match p {
+                Param::Plain(v) => plain.push(v),
+                Param::Body(b) => bodies.push(b),
+                Param::Form(f) => forms.push(f),
+            }
+        }
+        if bodies.is_empty() && forms.is_empty() {
+            for p in shared_body_form.iter() {
+                match p {
+                    Param::Body(b) => bodies.push(b.clone()),
+                    Param::Form(f) => forms.push(f.clone()),
+                    Param::Plain(_) => {}
+                }
+            }
+        }
+        if !plain.is_empty() {
+            op.insert("parameters".into(), Value::Array(plain));
+        }
+        if bodies.len() > 1 {
+            self.notes.push(format!(
+                "multiple 'in: body' parameters on {label}; kept the first"
+            ));
+        }
+        if !bodies.is_empty() && !forms.is_empty() {
+            self.notes.push(format!(
+                "'in: body' and 'in: formData' parameters on {label}; kept the body"
+            ));
+        }
+        let request_body = if let Some(body) = bodies.into_iter().next() {
+            Some(body)
+        } else if !forms.is_empty() {
+            let consumes = if consumes.is_empty() {
+                self.root_consumes
+            } else {
+                &consumes
+            };
+            let (body, media) = build_form_body(forms, consumes);
+            self.notes.push(format!(
+                "formData parameters on {label} converted to {media} request body"
+            ));
+            Some(body)
+        } else {
+            None
+        };
+        if let Some(body) = request_body {
+            op.insert("requestBody".into(), body);
+        }
+    }
+}
+
+/// Remove the schema-related keys from a parameter and return them as a schema map.
+fn take_schema_keys(param: &mut Map<String, Value>) -> Map<String, Value> {
+    let mut schema = Map::new();
+    for key in SCHEMA_KEYS {
+        if let Some(v) = param.remove(key) {
+            schema.insert(key.into(), v);
+        }
+    }
+    schema
+}
+
+fn media_types(consumes: &[String]) -> Vec<String> {
+    if consumes.is_empty() {
+        vec!["application/json".to_string()]
+    } else {
+        consumes.to_vec()
+    }
+}
+
+fn build_request_body(mut param: Map<String, Value>, consumes: &[String]) -> Value {
+    let mut schema = param
+        .remove("schema")
+        .unwrap_or_else(|| serde_json::json!({}));
+    fix_schema(&mut schema);
+    let content: Map<String, Value> = media_types(consumes)
+        .into_iter()
+        .map(|m| (m, serde_json::json!({ "schema": schema.clone() })))
+        .collect();
+    let mut body = Map::new();
+    for key in ["description", "required"] {
+        if let Some(v) = param.remove(key) {
+            body.insert(key.into(), v);
+        }
+    }
+    body.insert("content".into(), Value::Object(content));
+    Value::Object(body)
+}
+
+/// Build a form request body; returns it with the media type used.
+fn build_form_body(forms: Vec<Map<String, Value>>, consumes: &[String]) -> (Value, &'static str) {
+    let has_file = forms
+        .iter()
+        .any(|f| f.get("type").and_then(Value::as_str) == Some("file"));
+    let multipart = has_file || consumes.iter().any(|c| c == "multipart/form-data");
+    let media = if multipart {
+        "multipart/form-data"
+    } else {
+        "application/x-www-form-urlencoded"
+    };
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for mut form in forms {
+        let Some(name) = form.get("name").and_then(Value::as_str).map(String::from) else {
+            continue;
+        };
+        if form.get("required") == Some(&Value::Bool(true)) {
+            required.push(Value::String(name.clone()));
+        }
+        let mut schema = take_schema_keys(&mut form);
+        if let Some(Value::String(d)) = form.remove("description") {
+            schema.insert("description".into(), Value::String(d));
+        }
+        form.remove("collectionFormat");
+        let mut schema = Value::Object(schema);
+        fix_schema(&mut schema);
+        properties.insert(name, schema);
+    }
+    let mut schema = serde_json::json!({"type": "object", "properties": properties});
+    let has_required = !required.is_empty();
+    if has_required {
+        schema["required"] = Value::Array(required);
+    }
+    let mut body = serde_json::json!({"content": {media: {"schema": schema}}});
+    if has_required {
+        body["required"] = Value::Bool(true);
+    }
+    (body, media)
 }
 
 /// Build `servers` from `host`, `basePath` and `schemes`, removing those keys.
@@ -252,5 +615,198 @@ mod tests {
         let _ =
             conv(json!({"swagger":"2.0","paths":[],"definitions":5,"host":7,"schemes":"https"}));
         let _ = conv(json!("not an object"));
+    }
+
+    fn op(v: Value) -> Value {
+        conv(json!({"swagger":"2.0","paths":{"/pets":{"post":v}}})).0["paths"]["/pets"]["post"]
+            .clone()
+    }
+
+    #[test]
+    fn non_body_param_gets_schema() {
+        let o = op(json!({"parameters":[
+            {"name":"limit","in":"query","type":"integer","format":"int32","minimum":1,"default":10,"description":"d","required":false},
+            {"name":"tags","in":"query","type":"array","items":{"type":"string","enum":["a","b"]},"collectionFormat":"multi"}
+        ]}));
+        assert_eq!(
+            o["parameters"][0],
+            json!({"name":"limit","in":"query","description":"d","required":false,
+            "schema":{"type":"integer","format":"int32","minimum":1,"default":10}})
+        );
+        assert_eq!(
+            o["parameters"][1]["schema"],
+            json!({"type":"array","items":{"type":"string","enum":["a","b"]}})
+        );
+    }
+
+    #[test]
+    fn collection_format_maps_to_style() {
+        let style = |cf: Option<&str>, loc: &str| {
+            let mut p = json!({"name":"x","in":loc,"type":"array","items":{"type":"string"}});
+            if let Some(cf) = cf {
+                p["collectionFormat"] = json!(cf);
+            }
+            let (out, notes) =
+                conv(json!({"swagger":"2.0","paths":{"/p":{"get":{"parameters":[p]}}}}));
+            (out["paths"]["/p"]["get"]["parameters"][0].clone(), notes)
+        };
+        let (p, _) = style(Some("csv"), "query");
+        assert_eq!(
+            (&p["style"], &p["explode"]),
+            (&json!("form"), &json!(false))
+        );
+        let (p, _) = style(None, "query");
+        assert_eq!(
+            (&p["style"], &p["explode"]),
+            (&json!("form"), &json!(false))
+        );
+        let (p, _) = style(Some("multi"), "query");
+        assert_eq!((&p["style"], &p["explode"]), (&json!("form"), &json!(true)));
+        assert_eq!(style(Some("pipes"), "query").0["style"], "pipeDelimited");
+        assert_eq!(style(Some("ssv"), "query").0["style"], "spaceDelimited");
+        assert_eq!(style(Some("csv"), "path").0["style"], "simple");
+        assert_eq!(style(Some("csv"), "header").0["style"], "simple");
+        let (p, notes) = style(Some("tsv"), "query");
+        assert!(p.get("style").is_none() && p.get("collectionFormat").is_none());
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("collectionFormat 'tsv' is not supported in OpenAPI 3; dropped")));
+    }
+
+    #[test]
+    fn body_param_becomes_request_body() {
+        let body = json!({"in":"body","name":"b","required":true,"description":"d","schema":{"$ref":"#/definitions/Pet"}});
+        let o = op(json!({"consumes":["application/xml"],"parameters":[body.clone()]}));
+        assert_eq!(
+            o["requestBody"],
+            json!({"description":"d","required":true,
+            "content":{"application/xml":{"schema":{"$ref":"#/components/schemas/Pet"}}}})
+        );
+        assert!(o.get("parameters").is_none() && o.get("consumes").is_none());
+
+        let o = op(json!({"parameters":[body.clone()]}));
+        assert!(o["requestBody"]["content"]
+            .get("application/json")
+            .is_some());
+
+        let (out, _) = conv(
+            json!({"swagger":"2.0","consumes":["text/plain"],"paths":{"/p":{
+            "post":{"parameters":[body.clone()]},
+            "put":{"consumes":["application/xml"],"parameters":[body]}}}}),
+        );
+        assert!(out["paths"]["/p"]["post"]["requestBody"]["content"]
+            .get("text/plain")
+            .is_some());
+        assert!(out["paths"]["/p"]["put"]["requestBody"]["content"]
+            .get("application/xml")
+            .is_some());
+        assert!(out.get("consumes").is_none());
+    }
+
+    #[test]
+    fn form_data_becomes_form_body() {
+        let o = op(json!({"parameters":[
+            {"name":"a","in":"formData","type":"string","required":true},
+            {"name":"b","in":"formData","type":"integer"}]}));
+        let c = &o["requestBody"]["content"]["application/x-www-form-urlencoded"]["schema"];
+        assert_eq!(c["type"], "object");
+        assert_eq!(c["properties"]["a"], json!({"type":"string"}));
+        assert_eq!(c["properties"]["b"], json!({"type":"integer"}));
+        assert_eq!(c["required"], json!(["a"]));
+
+        let (out, notes) = conv(
+            json!({"swagger":"2.0","paths":{"/pets":{"post":{"parameters":[
+            {"name":"f","in":"formData","type":"file"}]}}}}),
+        );
+        let o = &out["paths"]["/pets"]["post"];
+        assert_eq!(
+            o["requestBody"]["content"]["multipart/form-data"]["schema"]["properties"]["f"],
+            json!({"type":"string","format":"binary"})
+        );
+        assert!(notes.iter().any(|n| n.contains(
+            "formData parameters on POST /pets converted to multipart/form-data request body"
+        )));
+    }
+
+    #[test]
+    fn multiple_bodies_keep_first_with_note() {
+        let (out, notes) = conv(
+            json!({"swagger":"2.0","paths":{"/pets":{"post":{"parameters":[
+            {"in":"body","name":"a","schema":{"type":"string"}},
+            {"in":"body","name":"b","schema":{"type":"integer"}}]}}}}),
+        );
+        let s =
+            &out["paths"]["/pets"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(s["type"], "string");
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("multiple 'in: body' parameters on POST /pets; kept the first")));
+    }
+
+    #[test]
+    fn body_and_form_keep_body_with_note() {
+        let (out, notes) = conv(
+            json!({"swagger":"2.0","paths":{"/pets":{"post":{"parameters":[
+            {"in":"body","name":"a","schema":{"type":"string"}},
+            {"in":"formData","name":"f","type":"string"}]}}}}),
+        );
+        assert!(out["paths"]["/pets"]["post"]["requestBody"]["content"]
+            .get("application/json")
+            .is_some());
+        assert!(notes.iter().any(
+            |n| n.contains("'in: body' and 'in: formData' parameters on POST /pets; kept the body")
+        ));
+    }
+
+    #[test]
+    fn top_level_parameters_split() {
+        let (out, _) = conv(json!({"swagger":"2.0",
+            "parameters":{
+                "Body":{"in":"body","name":"b","required":true,"schema":{"$ref":"#/definitions/Pet"}},
+                "Limit":{"in":"query","name":"limit","type":"integer"}},
+            "definitions":{"Pet":{}},
+            "paths":{"/p":{"post":{"parameters":[{"$ref":"#/parameters/Body"},{"$ref":"#/parameters/Limit"}]}}}}));
+        assert!(out.get("parameters").is_none());
+        assert_eq!(
+            out["components"]["parameters"]["Limit"]["schema"],
+            json!({"type":"integer"})
+        );
+        assert!(out["components"]["parameters"].get("Body").is_none());
+        assert_eq!(
+            out["components"]["requestBodies"]["Body"]["content"]["application/json"]["schema"]
+                ["$ref"],
+            "#/components/schemas/Pet"
+        );
+        let o = &out["paths"]["/p"]["post"];
+        assert_eq!(
+            o["requestBody"],
+            json!({"$ref":"#/components/requestBodies/Body"})
+        );
+        assert_eq!(
+            o["parameters"],
+            json!([{"$ref":"#/components/parameters/Limit"}])
+        );
+    }
+
+    #[test]
+    fn path_item_level_parameters_converted() {
+        let (out, _) = conv(json!({"swagger":"2.0","paths":{"/p/{id}":{
+            "parameters":[{"name":"id","in":"path","required":true,"type":"string"},
+                          {"in":"body","name":"b","schema":{"type":"string"}}],
+            "get":{},
+            "post":{"parameters":[{"in":"body","name":"own","schema":{"type":"integer"}}]}}}}));
+        let item = &out["paths"]["/p/{id}"];
+        assert_eq!(
+            item["parameters"],
+            json!([{"name":"id","in":"path","required":true,"schema":{"type":"string"}}])
+        );
+        assert_eq!(
+            item["get"]["requestBody"]["content"]["application/json"]["schema"]["type"],
+            "string"
+        );
+        assert_eq!(
+            item["post"]["requestBody"]["content"]["application/json"]["schema"]["type"],
+            "integer"
+        );
     }
 }
