@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-11-21
+
+### Bug Fixes
+
+- *(core)* Keep absolute file bases absolute when resolving refs
+
+### Documentation
+
+- Document external $ref resolution
+
+### Features
+
+- *(core)* Add external ref location helpers
+- *(core)* Find documents referenced by external refs
+- *(core)* Bundle external refs into components
+- *(core)* Bundle_source with a per-source document cap
+- Resolve external refs in the CLI and library with a directory sandbox
+- *(wasm)* Add pendingRefs and external docs to aggregate
+- *(web)* Resolve external refs from workspace files and add a multi-file example
+
 ## [0.10.0] - 2026-11-21
 
 ### Bug Fixes
