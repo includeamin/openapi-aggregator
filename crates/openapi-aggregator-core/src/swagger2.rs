@@ -265,7 +265,7 @@ impl Ctx<'_> {
         for method in METHODS {
             if let Some(Value::Object(op)) = item.get_mut(method) {
                 let label = format!("{} {path}", method.to_uppercase());
-                self.convert_operation(&label, op, &mut shared_body_form);
+                self.convert_operation(&label, op, &shared_body_form);
             }
         }
     }
@@ -274,7 +274,7 @@ impl Ctx<'_> {
         &mut self,
         label: &str,
         op: &mut Map<String, Value>,
-        shared_body_form: &mut Vec<Param>,
+        shared_body_form: &[Param],
     ) {
         let consumes = string_list(op.remove("consumes"));
         let produces = match op.remove("produces") {
@@ -308,7 +308,7 @@ impl Ctx<'_> {
             }
         }
         if bodies.is_empty() && forms.is_empty() {
-            for p in shared_body_form.iter() {
+            for p in shared_body_form {
                 match p {
                     Param::Body(b) => bodies.push(b.clone()),
                     Param::Form(f) => forms.push(f.clone()),
