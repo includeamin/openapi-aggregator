@@ -1,6 +1,9 @@
 //! Hide operations (e.g. internal endpoints) from a source before it is merged, and prune
 //! the components, security schemes and tags that only those operations used.
 
+// The internal pieces are wired into `filter_spec` by the next step.
+#![allow(dead_code)]
+
 use serde_json::Value;
 
 use crate::config::FilterRules;
@@ -79,7 +82,6 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-#[allow(dead_code)] // used by `remove_operations` in the next step
 /// Whether an operation matches any criterion of `rules`. `path` is `None` for webhooks, which
 /// disables the `paths` criterion.
 pub(crate) fn rules_match(
@@ -111,6 +113,88 @@ pub(crate) fn rules_match(
         .extensions
         .iter()
         .any(|ext| truthy(op.get(ext)) || truthy(path_item.get(ext)))
+}
+
+/// Remove every operation that is not kept by the rules; returns whether anything was removed.
+///
+/// An operation is kept iff no `exclude` rule matches it and every `include` rule matches it.
+/// Path items (and webhooks) left without operations are removed too.
+pub(crate) fn remove_operations(
+    spec: &mut Value,
+    include: &[&FilterRules],
+    exclude: &[&FilterRules],
+) -> bool {
+    let paths = filter_items(spec, "paths", true, include, exclude);
+    let webhooks = filter_items(spec, "webhooks", false, include, exclude);
+    paths | webhooks
+}
+
+fn filter_items(
+    spec: &mut Value,
+    key: &str,
+    match_paths: bool,
+    include: &[&FilterRules],
+    exclude: &[&FilterRules],
+) -> bool {
+    let Some(Value::Object(items)) = spec.get_mut(key) else {
+        return false;
+    };
+    let mut removed = false;
+    let names: Vec<String> = items.keys().cloned().collect();
+    for name in names {
+        let path = match_paths.then_some(name.as_str());
+        let (drop_methods, had_operations, path_excluded) = {
+            let item = &items[&name];
+            let methods: Vec<&str> = crate::swagger2::METHODS
+                .iter()
+                .copied()
+                .filter(|m| item.get(*m).is_some_and(Value::is_object))
+                .collect();
+            let drop_methods: Vec<&str> = methods
+                .iter()
+                .copied()
+                .filter(|m| {
+                    let op = &item[*m];
+                    exclude.iter().any(|r| rules_match(r, path, item, op))
+                        || !include.iter().all(|r| rules_match(r, path, item, op))
+                })
+                .collect();
+            let path_excluded = path.is_some_and(|p| {
+                exclude
+                    .iter()
+                    .any(|r| r.paths.iter().any(|glob| glob_match(glob, p)))
+            });
+            (
+                drop_methods
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+                !methods.is_empty(),
+                path_excluded,
+            )
+        };
+
+        let Some(Value::Object(item)) = items.get_mut(&name) else {
+            continue;
+        };
+        for method in &drop_methods {
+            item.shift_remove(method);
+            removed = true;
+        }
+        let remaining = crate::swagger2::METHODS
+            .iter()
+            .any(|m| item.get(*m).is_some_and(Value::is_object));
+        let drop_item = if had_operations {
+            !remaining && !item.contains_key("$ref")
+        } else {
+            path_excluded
+        };
+        if drop_item {
+            items.shift_remove(&name);
+            removed = true;
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -258,5 +342,193 @@ mod tests {
     fn webhooks_ignore_path_globs() {
         let r = rules(json!({"paths": ["/**"]}));
         assert!(!rules_match(&r, None, &json!({}), &json!({})));
+    }
+
+    fn doc(paths: Value) -> Value {
+        json!({"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":paths})
+    }
+
+    fn ok() -> Value {
+        json!({"200":{"description":"ok"}})
+    }
+
+    fn run(spec: &mut Value, include: Vec<FilterRules>, exclude: Vec<FilterRules>) -> bool {
+        let include: Vec<&FilterRules> = include.iter().collect();
+        let exclude: Vec<&FilterRules> = exclude.iter().collect();
+        remove_operations(spec, &include, &exclude)
+    }
+
+    #[test]
+    fn exclude_by_path_glob_removes_paths() {
+        let mut spec = doc(json!({
+            "/pets":{"get":{"responses":ok()}},
+            "/internal/a":{"get":{"responses":ok()}},
+            "/internal/b/c":{"post":{"responses":ok()}}
+        }));
+        assert!(run(
+            &mut spec,
+            vec![],
+            vec![rules(json!({"paths":["/internal/**"]}))]
+        ));
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/pets"]
+        );
+    }
+
+    #[test]
+    fn exclude_by_tag_keeps_other_operations_and_shared_parameters() {
+        let mut spec = doc(json!({
+            "/p/{id}":{
+                "parameters":[{"name":"id","in":"path","required":true}],
+                "get":{"responses":ok()},
+                "delete":{"tags":["internal"],"responses":ok()}},
+            "/q":{
+                "parameters":[{"name":"x","in":"query"}],
+                "get":{"tags":["internal"],"responses":ok()}}
+        }));
+        assert!(run(
+            &mut spec,
+            vec![],
+            vec![rules(json!({"tags":["internal"]}))]
+        ));
+        assert!(spec["paths"]["/p/{id}"].get("delete").is_none());
+        assert!(spec["paths"]["/p/{id}"].get("get").is_some());
+        assert!(spec["paths"]["/p/{id}"].get("parameters").is_some());
+        assert!(spec["paths"].get("/q").is_none());
+    }
+
+    #[test]
+    fn include_is_an_allow_list_and_exclude_wins() {
+        let paths = json!({
+            "/a":{"get":{"tags":["public"],"responses":ok()}},
+            "/b":{"get":{"tags":["public","beta"],"responses":ok()}},
+            "/c":{"get":{"tags":["private"],"responses":ok()}}
+        });
+        let mut spec = doc(paths.clone());
+        run(&mut spec, vec![rules(json!({"tags":["public"]}))], vec![]);
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/a", "/b"]
+        );
+
+        let mut spec = doc(paths.clone());
+        run(
+            &mut spec,
+            vec![rules(json!({"tags":["public"]}))],
+            vec![rules(json!({"tags":["beta"]}))],
+        );
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/a"]
+        );
+
+        // two include rules (global + source) must both match
+        let mut spec = doc(paths);
+        run(
+            &mut spec,
+            vec![
+                rules(json!({"tags":["public"]})),
+                rules(json!({"paths":["/b"]})),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/b"]
+        );
+    }
+
+    #[test]
+    fn path_item_extension_hides_all_its_operations() {
+        let mut spec = doc(json!({
+            "/a":{"x-internal":true,"get":{"responses":ok()},"post":{"responses":ok()}},
+            "/b":{"x-internal":false,"get":{"responses":ok()}}
+        }));
+        run(
+            &mut spec,
+            vec![],
+            vec![rules(json!({"extensions":["x-internal"]}))],
+        );
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/b"]
+        );
+    }
+
+    #[test]
+    fn webhooks_follow_the_non_path_rules() {
+        let mut spec = json!({"openapi":"3.1.0","info":{"title":"T","version":"1"},"webhooks":{
+            "hidden":{"post":{"tags":["internal"],"responses":ok()}},
+            "shown":{"post":{"responses":ok()}}}});
+        let r = rules(json!({"tags":["internal"],"paths":["/**"]}));
+        assert!(run(&mut spec, vec![], vec![r]));
+        assert_eq!(
+            spec["webhooks"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["shown"]
+        );
+    }
+
+    #[test]
+    fn nothing_matching_changes_nothing() {
+        let original = doc(json!({"/a":{"get":{"responses":ok()}},"/ref":{"$ref":"#/paths/~1a"}}));
+        let mut spec = original.clone();
+        assert!(!run(
+            &mut spec,
+            vec![],
+            vec![rules(json!({"tags":["nope"]}))]
+        ));
+        assert_eq!(spec, original);
+        // a $ref-only path item is kept unless a path glob excludes it
+        let mut spec = original.clone();
+        assert!(run(
+            &mut spec,
+            vec![],
+            vec![rules(json!({"paths":["/ref"]}))]
+        ));
+        assert!(spec["paths"].get("/ref").is_none() && spec["paths"].get("/a").is_some());
+    }
+
+    #[test]
+    fn surviving_paths_keep_their_order() {
+        let mut spec = doc(json!({
+            "/hidden":{"get":{"tags":["internal"],"responses":ok()}},
+            "/b":{"get":{"responses":ok()}},
+            "/c":{"get":{"responses":ok()}},
+            "/d":{"get":{"responses":ok()}}
+        }));
+        run(&mut spec, vec![], vec![rules(json!({"tags":["internal"]}))]);
+        assert_eq!(
+            spec["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["/b", "/c", "/d"]
+        );
     }
 }
