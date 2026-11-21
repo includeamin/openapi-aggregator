@@ -213,6 +213,108 @@ const MULTI_AUTHOR = `Author:
     name: { type: string }
 `;
 
+const HIDE_BILLING = `openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+tags:
+  - name: invoices
+  - name: internal
+paths:
+  /invoices:
+    get:
+      tags: [invoices]
+      summary: List invoices
+      responses:
+        '200':
+          description: Invoices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Invoice'
+  /internal/metrics:
+    get:
+      tags: [internal]
+      summary: Billing metrics
+      responses:
+        '200':
+          description: Metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingMetrics'
+components:
+  schemas:
+    Invoice:
+      type: object
+      properties:
+        id: { type: integer }
+        total: { type: number }
+    BillingMetrics:
+      type: object
+      properties:
+        queueDepth: { type: integer }
+`;
+
+const HIDE_USERS = `openapi: 3.0.3
+info:
+  title: Users API
+  version: 1.0.0
+tags:
+  - name: users
+  - name: staff
+paths:
+  /users:
+    get:
+      tags: [users]
+      summary: List users
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+  /internal/metrics:
+    get:
+      summary: Users metrics
+      responses:
+        '200':
+          description: Metrics
+  /users/{id}/audit:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [staff]
+      x-internal: true
+      summary: Audit trail
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEntry'
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+    AuditEntry:
+      type: object
+      properties:
+        actor: { type: string }
+`;
+
 export const EXAMPLES: Example[] = [
   {
     id: 'rename',
@@ -340,6 +442,34 @@ sources:
       { name: 'specs/library.yaml', content: MULTI_ROOT },
       { name: 'specs/schemas/book.yaml', content: MULTI_BOOK },
       { name: 'specs/schemas/author.yaml', content: MULTI_AUTHOR },
+    ],
+  },
+  {
+    id: 'hide-internal',
+    title: 'Hide internal endpoints',
+    config: `# Build a public spec: drop operations by path, tag or an x- flag.
+# Both services expose /internal/metrics, which would normally conflict;
+# filtered operations are removed before merging, along with the schemas,
+# tags and security schemes only they used.
+sources:
+  - name: billing
+    path: ./specs/billing.yaml
+  - name: users
+    path: ./specs/users.yaml
+
+merge:
+  filter:
+    exclude:
+      paths: ["/internal/**"]
+      tags: [internal]
+      extensions: [x-internal]
+  info:
+    title: Public API
+    version: 1.0.0
+`,
+    files: [
+      { name: 'specs/billing.yaml', content: HIDE_BILLING },
+      { name: 'specs/users.yaml', content: HIDE_USERS },
     ],
   },
   {
