@@ -28,12 +28,17 @@ pub fn convert(spec: Value) -> (Value, Vec<String>) {
         }
         components.insert("schemas".into(), Value::Object(defs));
     }
-    if let Some(responses @ Value::Object(_)) = root.remove("responses") {
-        components.insert("responses".into(), responses);
+    let top_responses = root.remove("responses");
+    if let Some(Value::Object(schemes)) = root.remove("securityDefinitions") {
+        let schemes = schemes
+            .into_iter()
+            .map(|(name, scheme)| (name, convert_security_scheme(scheme, &mut notes)))
+            .collect();
+        components.insert("securitySchemes".into(), Value::Object(schemes));
     }
 
     let root_consumes = string_list(root.remove("consumes"));
-    root.remove("produces");
+    let root_produces = string_list(root.remove("produces"));
 
     let top_params = match root.remove("parameters") {
         Some(Value::Object(m)) => m,
@@ -42,8 +47,16 @@ pub fn convert(spec: Value) -> (Value, Vec<String>) {
     let mut ctx = Ctx {
         top_params: &top_params,
         root_consumes: &root_consumes,
+        root_produces: &root_produces,
         notes: &mut notes,
     };
+    if let Some(Value::Object(responses)) = top_responses {
+        let converted = responses
+            .into_iter()
+            .map(|(name, r)| (name, convert_response(r, ctx.root_produces)))
+            .collect();
+        components.insert("responses".into(), Value::Object(converted));
+    }
     let (params, bodies) = ctx.convert_top_level_parameters();
     if !params.is_empty() {
         components.insert("parameters".into(), Value::Object(params));
@@ -114,6 +127,7 @@ enum Param {
 struct Ctx<'a> {
     top_params: &'a Map<String, Value>,
     root_consumes: &'a [String],
+    root_produces: &'a [String],
     notes: &'a mut Vec<String>,
 }
 
@@ -263,6 +277,15 @@ impl Ctx<'_> {
         shared_body_form: &mut Vec<Param>,
     ) {
         let consumes = string_list(op.remove("consumes"));
+        let produces = match op.remove("produces") {
+            Some(v) => string_list(Some(v)),
+            None => self.root_produces.to_vec(),
+        };
+        if let Some(Value::Object(responses)) = op.get_mut("responses") {
+            for response in responses.values_mut() {
+                *response = convert_response(response.take(), &produces);
+            }
+        }
         let own: Vec<Param> = match op.remove("parameters") {
             Some(Value::Array(list)) => list
                 .into_iter()
@@ -405,6 +428,94 @@ fn build_form_body(forms: Vec<Map<String, Value>>, consumes: &[String]) -> (Valu
         body["required"] = Value::Bool(true);
     }
     (body, media)
+}
+
+/// Convert a Swagger 2.0 response object (`schema`, `headers`, `examples`) to 3.0.
+fn convert_response(response: Value, produces: &[String]) -> Value {
+    let Value::Object(mut map) = response else {
+        return response;
+    };
+    if map.contains_key("$ref") {
+        return Value::Object(map);
+    }
+    let mut content: Map<String, Value> = Map::new();
+    if let Some(mut schema) = map.remove("schema") {
+        fix_schema(&mut schema);
+        for media in media_types(produces) {
+            content.insert(media, serde_json::json!({ "schema": schema.clone() }));
+        }
+    }
+    if let Some(Value::Object(examples)) = map.remove("examples") {
+        for (media, example) in examples {
+            let entry = content
+                .entry(media)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Value::Object(entry) = entry {
+                entry.insert("example".into(), example);
+            }
+        }
+    }
+    if !content.is_empty() {
+        map.insert("content".into(), Value::Object(content));
+    }
+    if let Some(Value::Object(headers)) = map.get_mut("headers") {
+        for header in headers.values_mut() {
+            if let Value::Object(h) = header {
+                let mut schema = Value::Object(take_schema_keys(h));
+                h.remove("collectionFormat");
+                fix_schema(&mut schema);
+                h.insert("schema".into(), schema);
+            }
+        }
+    }
+    Value::Object(map)
+}
+
+fn convert_security_scheme(scheme: Value, notes: &mut Vec<String>) -> Value {
+    let Value::Object(mut map) = scheme else {
+        return scheme;
+    };
+    match map.get("type").and_then(Value::as_str) {
+        Some("basic") => {
+            map.insert("type".into(), "http".into());
+            map.insert("scheme".into(), "basic".into());
+        }
+        Some("apiKey") => {}
+        Some("oauth2") => {
+            let flow = map
+                .remove("flow")
+                .and_then(|v| v.as_str().map(String::from));
+            let (target, keys): (&str, &[&str]) = match flow.as_deref() {
+                Some("implicit") => ("implicit", &["authorizationUrl"]),
+                Some("password") => ("password", &["tokenUrl"]),
+                Some("application") => ("clientCredentials", &["tokenUrl"]),
+                Some("accessCode") => ("authorizationCode", &["authorizationUrl", "tokenUrl"]),
+                other => {
+                    notes.push(format!(
+                        "unknown OAuth2 flow '{}' passed through",
+                        other.unwrap_or("")
+                    ));
+                    return Value::Object(map);
+                }
+            };
+            let mut flow_obj = Map::new();
+            for key in keys {
+                if let Some(v) = map.remove(*key) {
+                    flow_obj.insert((*key).into(), v);
+                }
+            }
+            let scopes = map
+                .remove("scopes")
+                .unwrap_or_else(|| Value::Object(Map::new()));
+            flow_obj.insert("scopes".into(), scopes);
+            map.insert("flows".into(), serde_json::json!({ target: flow_obj }));
+        }
+        other => notes.push(format!(
+            "unknown security scheme type '{}' passed through",
+            other.unwrap_or("")
+        )),
+    }
+    Value::Object(map)
 }
 
 /// Build `servers` from `host`, `basePath` and `schemes`, removing those keys.
@@ -808,5 +919,114 @@ mod tests {
             item["post"]["requestBody"]["content"]["application/json"]["schema"]["type"],
             "integer"
         );
+    }
+
+    fn resp_of(root: Value, op: Value) -> Value {
+        let mut spec = root;
+        spec["swagger"] = json!("2.0");
+        spec["paths"] = json!({"/p":{"get":op}});
+        convert(spec).0["paths"]["/p"]["get"]["responses"]["200"].clone()
+    }
+
+    #[test]
+    fn response_schema_becomes_content() {
+        let r = resp_of(
+            json!({"produces":["application/json","application/xml"]}),
+            json!({"responses":{"200":{"description":"ok","schema":{"$ref":"#/definitions/Pet"}}}}),
+        );
+        let want = json!({"schema":{"$ref":"#/components/schemas/Pet"}});
+        assert_eq!(
+            r["content"],
+            json!({"application/json":want.clone(),"application/xml":want})
+        );
+        assert!(r.get("schema").is_none());
+
+        let r = resp_of(
+            json!({"produces":["application/json"]}),
+            json!({"produces":["text/plain"],"responses":{"200":{"description":"ok","schema":{"type":"string"}}}}),
+        );
+        assert!(
+            r["content"].get("text/plain").is_some()
+                && r["content"].get("application/json").is_none()
+        );
+
+        let r = resp_of(
+            json!({}),
+            json!({"responses":{"200":{"description":"ok","schema":{"type":"string"}}}}),
+        );
+        assert!(r["content"].get("application/json").is_some());
+
+        let r = resp_of(json!({}), json!({"responses":{"200":{"description":"ok"}}}));
+        assert!(r.get("content").is_none());
+    }
+
+    #[test]
+    fn response_headers_and_examples() {
+        let r = resp_of(
+            json!({}),
+            json!({"responses":{"200":{"description":"ok","schema":{"type":"object"},
+            "headers":{"X-Rate":{"type":"integer","description":"limit"}},
+            "examples":{"application/json":{"a":1}}}}}),
+        );
+        assert_eq!(
+            r["headers"]["X-Rate"],
+            json!({"description":"limit","schema":{"type":"integer"}})
+        );
+        assert_eq!(r["content"]["application/json"]["example"], json!({"a":1}));
+        assert!(r.get("examples").is_none());
+    }
+
+    #[test]
+    fn response_refs_and_top_level_responses() {
+        let (out, _) = conv(json!({"swagger":"2.0","produces":["application/json"],
+            "responses":{"NotFound":{"description":"nf","schema":{"type":"string"}}},
+            "paths":{"/p":{"get":{"responses":{"404":{"$ref":"#/responses/NotFound"}}}}}}));
+        assert_eq!(
+            out["paths"]["/p"]["get"]["responses"]["404"]["$ref"],
+            "#/components/responses/NotFound"
+        );
+        assert!(
+            out["components"]["responses"]["NotFound"]["content"]["application/json"].is_object()
+        );
+        assert!(out.get("produces").is_none());
+    }
+
+    #[test]
+    fn security_definitions() {
+        let (out, notes) = conv(
+            json!({"swagger":"2.0","security":[{"k":[]}],"securityDefinitions":{
+            "b":{"type":"basic","description":"d"},
+            "k":{"type":"apiKey","name":"X","in":"header"},
+            "i":{"type":"oauth2","flow":"implicit","authorizationUrl":"https://a","scopes":{"r":"read"}},
+            "p":{"type":"oauth2","flow":"password","tokenUrl":"https://t","scopes":{}},
+            "a":{"type":"oauth2","flow":"application","tokenUrl":"https://t","scopes":{}},
+            "c":{"type":"oauth2","flow":"accessCode","authorizationUrl":"https://a","tokenUrl":"https://t","scopes":{}},
+            "x":{"type":"mystery"}}}),
+        );
+        let s = &out["components"]["securitySchemes"];
+        assert!(out.get("securityDefinitions").is_none());
+        assert_eq!(
+            s["b"],
+            json!({"type":"http","scheme":"basic","description":"d"})
+        );
+        assert_eq!(s["k"], json!({"type":"apiKey","name":"X","in":"header"}));
+        assert_eq!(
+            s["i"],
+            json!({"type":"oauth2","flows":{"implicit":{"authorizationUrl":"https://a","scopes":{"r":"read"}}}})
+        );
+        assert_eq!(s["p"]["flows"]["password"]["tokenUrl"], "https://t");
+        assert_eq!(
+            s["a"]["flows"]["clientCredentials"]["tokenUrl"],
+            "https://t"
+        );
+        assert_eq!(
+            s["c"]["flows"]["authorizationCode"],
+            json!({"authorizationUrl":"https://a","tokenUrl":"https://t","scopes":{}})
+        );
+        assert_eq!(s["x"], json!({"type":"mystery"}));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("unknown security scheme type 'mystery'")));
+        assert_eq!(out["security"], json!([{"k":[]}]));
     }
 }
