@@ -14,6 +14,9 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
+    #[error("$ref '{reference}' {reason}")]
+    UnresolvedRef { reference: String, reason: String },
+
     #[error("no sources provided")]
     NoSources,
 }
