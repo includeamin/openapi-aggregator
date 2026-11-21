@@ -128,3 +128,110 @@ fn runs_without_check_are_unchanged() {
     assert!(stdout.contains("Ghost"), "{stdout}");
     assert!(!stderr.contains("check"), "{stderr}");
 }
+
+fn generate(dir: &Path, args: &[&str]) {
+    let (code, _, stderr) = run(dir, args);
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
+fn up_to_date_output_passes() {
+    let dir = valid_dir();
+    generate(dir.path(), &["-c", "cfg.yaml", "-o", "out.yaml"]);
+    let (code, stdout, stderr) = run(dir.path(), &["--check", "-c", "cfg.yaml", "-o", "out.yaml"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn stale_output_exits_2_with_a_diff_and_is_not_modified() {
+    let dir = valid_dir();
+    generate(dir.path(), &["-c", "cfg.yaml", "-o", "out.yaml"]);
+    let original = std::fs::read_to_string(dir.path().join("out.yaml")).unwrap();
+    let stale = original.replace("title: A", "title: Z");
+    assert_ne!(stale, original);
+    write(dir.path(), "out.yaml", &stale);
+
+    let (code, stdout, stderr) = run(dir.path(), &["--check", "-c", "cfg.yaml", "-o", "out.yaml"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("--- ") && stderr.contains("+++ regenerated"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("-  title: Z") && stderr.contains("+  title: A"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("out of date"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("out.yaml")).unwrap(),
+        stale
+    );
+}
+
+#[test]
+fn missing_output_exits_2_and_is_not_created() {
+    let dir = valid_dir();
+    let (code, _, stderr) = run(
+        dir.path(),
+        &["--check", "-c", "cfg.yaml", "-o", "nope.yaml"],
+    );
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("does not exist"), "{stderr}");
+    assert!(!dir.path().join("nope.yaml").exists());
+}
+
+#[test]
+fn format_and_key_order_do_not_matter() {
+    let dir = valid_dir();
+    generate(
+        dir.path(),
+        &["-c", "cfg.yaml", "-f", "json", "-o", "out.json"],
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("out.json")).unwrap())
+            .unwrap();
+    let reversed: serde_json::Map<String, serde_json::Value> = json
+        .as_object()
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    write(
+        dir.path(),
+        "out.yaml",
+        &serde_yaml::to_string(&reversed).unwrap(),
+    );
+
+    let (code, _, stderr) = run(dir.path(), &["--check", "-c", "cfg.yaml", "-o", "out.yaml"]);
+    assert_eq!(code, 0, "{stderr}");
+    let (code, _, stderr) = run(
+        dir.path(),
+        &["--check", "-c", "cfg.yaml", "-f", "json", "-o", "out.json"],
+    );
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
+fn invalid_and_stale_exits_1_and_still_prints_the_diff() {
+    let dir = valid_dir();
+    write(dir.path(), "cfg.yaml", DANGLING_CFG);
+    write(dir.path(), "out.yaml", "openapi: 3.0.3\n");
+    let (code, _, stderr) = run(dir.path(), &["--check", "-c", "cfg.yaml", "-o", "out.yaml"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("error[dangling-ref]") && stderr.contains("out of date"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn unparseable_output_file_is_stale() {
+    let dir = valid_dir();
+    write(dir.path(), "out.yaml", "{: nope");
+    let (code, _, stderr) = run(dir.path(), &["--check", "-c", "cfg.yaml", "-o", "out.yaml"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("out of date"), "{stderr}");
+}

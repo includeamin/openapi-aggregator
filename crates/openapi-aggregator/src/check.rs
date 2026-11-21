@@ -1,6 +1,11 @@
 //! `--check` mode: validate the merged spec and report the outcome for CI.
 
-use openapi_aggregator_core::{validate, Finding, MergeReport, Severity};
+use std::path::Path;
+
+use openapi_aggregator_core::{
+    parse_content, validate, Finding, MergeReport, OutputFormat, Severity,
+};
+use serde_json::Value;
 
 /// What a check run concluded; maps to the process exit code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +15,6 @@ pub enum Outcome {
     /// Validation errors, denied warnings, or a merge failure (exit 1).
     Failed,
     /// The output file is missing or out of date (exit 2).
-    #[allow(dead_code)] // constructed once output comparison lands
     Stale,
 }
 
@@ -86,6 +90,72 @@ pub fn run_validation(report: &MergeReport, deny_warnings: bool) -> Outcome {
     }
 }
 
+/// How the existing output file compares with the freshly merged spec.
+#[derive(Debug)]
+pub enum Comparison {
+    UpToDate,
+    Missing,
+    Stale {
+        diff: String,
+    },
+    /// The file exists but is not valid JSON/YAML.
+    Unreadable(String),
+}
+
+fn render(value: &Value, format: &OutputFormat) -> String {
+    match format {
+        OutputFormat::Yaml => serde_yaml::to_string(value).unwrap_or_default(),
+        OutputFormat::Json => serde_json::to_string_pretty(value).unwrap_or_default() + "\n",
+    }
+}
+
+/// Compare the file at `path` with `merged` as data, so formatting, format (YAML vs JSON)
+/// and key order never matter. On a difference, `diff` is a unified diff of both sides
+/// rendered in `format`.
+pub fn compare_output(path: &Path, merged: &Value, format: &OutputFormat) -> Comparison {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Comparison::Missing,
+        Err(e) => return Comparison::Unreadable(e.to_string()),
+    };
+    let existing = match parse_content(&text) {
+        Ok(value) => value,
+        Err(e) => return Comparison::Unreadable(e.to_string()),
+    };
+    if &existing == merged {
+        return Comparison::UpToDate;
+    }
+    let old = render(&existing, format);
+    let new = render(merged, format);
+    let diff = similar::TextDiff::from_lines(&old, &new)
+        .unified_diff()
+        .context_radius(3)
+        .header(&path.display().to_string(), "regenerated")
+        .to_string();
+    Comparison::Stale { diff }
+}
+
+/// Check that the output file is up to date, printing what is wrong to stderr.
+pub fn check_output(path: &Path, merged: &Value, format: &OutputFormat) -> Outcome {
+    let shown = path.display();
+    match compare_output(path, merged, format) {
+        Comparison::UpToDate => Outcome::Passed,
+        Comparison::Missing => {
+            eprintln!("output file {shown} does not exist; run without --check to create it");
+            Outcome::Stale
+        }
+        Comparison::Stale { diff } => {
+            eprint!("{diff}");
+            eprintln!("output file {shown} is out of date; regenerate it without --check");
+            Outcome::Stale
+        }
+        Comparison::Unreadable(reason) => {
+            eprintln!("output file {shown} could not be read ({reason}); it is out of date; regenerate it without --check");
+            Outcome::Stale
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +193,52 @@ mod tests {
         assert_eq!(Outcome::Passed.exit_code(), 0);
         assert_eq!(Outcome::Failed.exit_code(), 1);
         assert_eq!(Outcome::Stale.exit_code(), 2);
+    }
+
+    fn merged() -> serde_json::Value {
+        serde_json::json!({"openapi": "3.0.3", "info": {"title": "T", "version": "1"}, "paths": {}})
+    }
+
+    #[test]
+    fn compares_the_output_file_by_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.yaml");
+
+        assert!(matches!(
+            compare_output(&path, &merged(), &OutputFormat::Yaml),
+            Comparison::Missing
+        ));
+
+        std::fs::write(
+            &path,
+            "paths: {}\ninfo: {version: '1', title: T}\nopenapi: 3.0.3\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            compare_output(&path, &merged(), &OutputFormat::Yaml),
+            Comparison::UpToDate
+        ));
+
+        std::fs::write(
+            &path,
+            "openapi: 3.0.3\ninfo: {title: Other, version: '1'}\npaths: {}\n",
+        )
+        .unwrap();
+        match compare_output(&path, &merged(), &OutputFormat::Yaml) {
+            Comparison::Stale { diff } => {
+                assert!(diff.contains("+++ regenerated"), "{diff}");
+                assert!(
+                    diff.contains("-  title: Other") && diff.contains("+  title: T"),
+                    "{diff}"
+                );
+            }
+            other => panic!("expected Stale, got {other:?}"),
+        }
+
+        std::fs::write(&path, "{: nope").unwrap();
+        assert!(matches!(
+            compare_output(&path, &merged(), &OutputFormat::Yaml),
+            Comparison::Unreadable(_)
+        ));
     }
 }

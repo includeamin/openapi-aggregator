@@ -71,7 +71,16 @@ async fn run(cli: Cli) -> Result<check::Outcome, Box<dyn std::error::Error>> {
     }
 
     if cli.check {
-        return Ok(check::run_validation(&report, cli.deny_warnings));
+        let mut outcome = check::run_validation(&report, cli.deny_warnings);
+        if let Some(path) = &cli.output {
+            let format = cli.format.unwrap_or(config.output.format);
+            let stale = check::check_output(path, &report.spec, &format);
+            // A validation failure (exit 1) outranks a stale file (exit 2).
+            if outcome == check::Outcome::Passed {
+                outcome = stale;
+            }
+        }
+        return Ok(outcome);
     }
 
     let format = cli.format.unwrap_or(config.output.format);
