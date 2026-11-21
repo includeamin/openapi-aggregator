@@ -9,6 +9,7 @@ Available as both a **Rust library** and a **CLI tool**.
 ## Features
 
 - **Swagger 2.0 support** – Swagger 2.0 sources are converted to OpenAPI 3.0.3 automatically; anything that had to be approximated is reported as a warning
+- **External `$ref`s** – specs split across files or URLs are bundled per source before merging (CLI sandboxed to the config directory)
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -127,6 +128,17 @@ A referenced variable that is not set is an error.
 ### Additional source blocks
 
 Each source can define `additional_blocks` as any YAML/JSON object. It is deep-merged into that source document before merge, so you can inject vendor extensions (for example API gateway related `x-...` blocks) or other custom OpenAPI fragments without adding provider-specific fields.
+
+### External `$ref`s
+
+A source may point at other files or URLs (`$ref: ./schemas/pet.yaml#/Pet`, `$ref: https://example.com/defs.yaml#/Error`). Before merging, each source is **bundled**: every external target is copied into that source's own `components` and the `$ref` is rewritten to `#/components/...`. Circular references work, and everything downstream (conflict strategies, renaming) sees a normal self-contained spec. Specs without external refs are unchanged.
+
+- **Where targets land:** a pointer like `#/components/schemas/Pet` keeps its type and name; `#/definitions/Pet` and `#/$defs/Pet` become schemas; otherwise the type comes from where the `$ref` sits (a `parameters` entry becomes a parameter, a response becomes a response, ...) and the name is the last pointer segment (or the file name for a whole-file ref). If the name is taken, the file name is added (`pet_Pet`) and a warning says so. A path item that is a `$ref` is inlined.
+- **Relative refs** resolve against the referencing file or URL.
+- **Sandbox (CLI and library):** external file refs may only read inside the config directory and the directory of each file source. Anything else, including absolute paths and symlinks pointing elsewhere, is an error. Pass `--allow-outside-config-dir` (or `AggregateOptions { allow_outside_config_dir: true, .. }` with `aggregate_with_options`) to lift it.
+- **URLs:** a URL source's `headers` are only sent to that URL's origin; refs to other hosts are fetched without them. A document fetched over HTTP can never cause a local file read, and `file:` URLs are not supported.
+- **Limit:** at most 100 external documents per source.
+- **Playground:** referenced files are looked up in the workspace by name, so add each one under exactly the name the `$ref` resolves to (the error message tells you which). Remote refs follow the same "Allow fetching" rule as remote sources.
 
 ## Library Usage
 
