@@ -1,0 +1,8 @@
+sources:
+  - name: a
+    path: a.yaml
+    additional_blocks:
+      components:
+        schemas:
+          Bad:
+            $ref: '#/components/schemas/Ghost'

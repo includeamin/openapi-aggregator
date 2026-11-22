@@ -1,0 +1,9 @@
+sources:
+  - name: a
+    path: a.yaml
+  - name: b
+    path: b.yaml
+merge:
+  info:
+    title: Fixture API
+    version: 1.0.0

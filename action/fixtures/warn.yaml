@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info:
+  title: Warn
+  version: '1'
+tags:
+  - name: declared
+paths:
+  /w:
+    get:
+      operationId: getW
+      tags: [undeclared]
+      responses:
+        '200':
+          description: ok

@@ -1,0 +1,3 @@
+sources:
+  - name: warn
+    path: warn.yaml
