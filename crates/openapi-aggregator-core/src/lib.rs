@@ -56,7 +56,7 @@ pub use config::{
 pub use error::Error;
 pub use expand::{expand_sources, glob_base, is_glob};
 pub use filter::{filter_spec, glob_match};
-pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
+pub use merge::{merge_specs, merge_specs_with_report, resolve_path_prefix, MergeReport};
 pub use prepare::{
     bundle_source, filter_source, parse_content, prepare_source, prepare_source_with_notes,
     PreparedSource,

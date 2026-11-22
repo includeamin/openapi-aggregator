@@ -98,6 +98,7 @@ pub fn expand_sources(config: Config, candidates: &[String]) -> Result<Config, E
             tag_prefix,
             additional_blocks,
             filter,
+            path_prefix,
             ..
         } = &source
         else {
@@ -129,6 +130,7 @@ pub fn expand_sources(config: Config, candidates: &[String]) -> Result<Config, E
                 tag_prefix: tag_prefix.clone(),
                 additional_blocks: additional_blocks.clone(),
                 filter: filter.clone(),
+                path_prefix: path_prefix.clone(),
             });
         }
     }
@@ -348,5 +350,18 @@ mod tests {
             expand_sources(config("sources:\n  - path: 'specs/*.yaml'\n"), &candidates).unwrap();
         let twice = expand_sources(once.clone(), &candidates).unwrap();
         assert_eq!(describe(&once), describe(&twice));
+    }
+
+    #[test]
+    fn path_prefix_is_copied_to_every_match() {
+        let cfg =
+            config("sources:\n  - path: 'services/*/api.yaml'\n    path_prefix: '/{name}/v1'\n");
+        let out =
+            expand_sources(cfg, &files(&["services/a/api.yaml", "services/b/api.yaml"])).unwrap();
+        assert_eq!(out.sources.len(), 2);
+        assert!(out
+            .sources
+            .iter()
+            .all(|s| s.path_prefix() == Some("/{name}/v1")));
     }
 }

@@ -199,6 +199,7 @@ mod tests {
                 }
             })),
             filter: None,
+            path_prefix: None,
         };
 
         let base = r#"{
@@ -228,6 +229,7 @@ mod tests {
             tag_prefix: None,
             additional_blocks: Some(json!({ "x-team": "core" })),
             filter: None,
+            path_prefix: None,
         };
         let (name, spec) = prepare_source(
             r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#,
@@ -255,6 +257,7 @@ mod tests {
             tag_prefix: None,
             additional_blocks: blocks,
             filter: None,
+            path_prefix: None,
         }
     }
 
@@ -312,6 +315,7 @@ mod tests {
             tag_prefix: None,
             additional_blocks: Some(json!([1, 2, 3])),
             filter: None,
+            path_prefix: None,
         };
 
         let base = r#"{"openapi":"3.0.3","info":{"title":"T","version":"1"},"paths":{}}"#;
