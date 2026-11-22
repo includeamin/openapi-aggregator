@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.2] - 2026-11-22
+
+### CI
+
+- Add a tested decision script for feature releases
+- *(release)* Expose the bump type and a publish decision
+- Add an idempotent crates.io publish script
+- *(release)* Publish feature releases to crates.io
+
+### Documentation
+
+- Document crates.io publishing and the release policy
+
 ## [0.15.1] - 2026-11-22
 
 ### Miscellaneous
