@@ -140,8 +140,6 @@ PY
   assert_contains "$(cat "$TMP/err")" "unsupported" "unsupported platform error"
 }
 
-test_install
-
 # --- tests for run.sh ------------------------------------------------------
 
 # shellcheck disable=SC2016  # single quotes are deliberate: hostile values must not be expanded
@@ -247,7 +245,11 @@ c');
   assert_not_contains "$(cat "$TMP/gh_output")" "result=stale" "write mode does not report stale"
 }
 
-test_run
+case "${ONLY:-all}" in
+  install) test_install ;;
+  run) test_run ;;
+  *) test_install; test_run ;;
+esac
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
