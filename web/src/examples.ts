@@ -354,6 +354,45 @@ paths:
           description: Billing
 `;
 
+const PREFIX_BILLING = `openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+paths:
+  /items:
+    get:
+      summary: List billing items
+      responses:
+        '200':
+          description: ok
+`;
+
+const PREFIX_USERS = `openapi: 3.0.3
+info:
+  title: Users API
+  version: 1.0.0
+paths:
+  /items:
+    get:
+      summary: List user items
+      responses:
+        '200':
+          description: ok
+`;
+
+const PREFIX_ORDERS = `openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.0.0
+paths:
+  /items:
+    get:
+      summary: List order items
+      responses:
+        '200':
+          description: ok
+`;
+
 export const EXAMPLES: Example[] = [
   {
     id: 'rename',
@@ -524,6 +563,31 @@ sources:
       { name: 'specs/users.yaml', content: GLOB_USERS },
       { name: 'specs/orders.yaml', content: GLOB_ORDERS },
       { name: 'specs/billing.yaml', content: GLOB_BILLING },
+    ],
+  },
+  {
+    id: 'path-prefixes',
+    title: 'Per-source path prefixes',
+    config: `# All three services define GET /items. prefix_paths prefixes sources with their
+# name by default; a source's own path_prefix replaces that, and "/" opts out.
+# Result: /v2/items (billing), /items (users), /orders/items (orders).
+sources:
+  - name: billing
+    path: ./specs/billing.yaml
+    path_prefix: /v2
+  - name: users
+    path: ./specs/users.yaml
+    path_prefix: /          # keep paths as written
+  - name: orders
+    path: ./specs/orders.yaml   # no path_prefix: gets /orders from prefix_paths
+
+merge:
+  prefix_paths: true
+`,
+    files: [
+      { name: 'specs/billing.yaml', content: PREFIX_BILLING },
+      { name: 'specs/users.yaml', content: PREFIX_USERS },
+      { name: 'specs/orders.yaml', content: PREFIX_ORDERS },
     ],
   },
   {
