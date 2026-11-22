@@ -53,9 +53,11 @@ resolve_version() {
   esac
 }
 
+# Print the SHA-256 of a file. GNU sha256sum (Git Bash on Windows) prefixes the hash with a
+# backslash when the path contains backslashes; strip it.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum "$1" | awk '{ h = $1; sub(/^\\/, "", h); print h }'
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi

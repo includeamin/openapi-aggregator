@@ -107,6 +107,22 @@ PY
     )
   }
 
+  # Git Bash's sha256sum prefixes its output with a backslash when the path contains
+  # backslashes (as Windows runner temp paths do); verification must still work.
+  mkdir -p "$TMP/fakebin"
+  cat > "$TMP/fakebin/sha256sum" <<'FAKE'
+#!/usr/bin/env python3
+import hashlib, sys
+digest = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
+print(chr(92) + digest + "  " + sys.argv[1])
+FAKE
+  chmod +x "$TMP/fakebin/sha256sum"
+  if (PATH="$TMP/fakebin:$PATH" verify_checksum "$RELEASE/$ASSET" "$RELEASE/checksums.txt" "$ASSET") 2>"$TMP/err"; then
+    pass
+  else
+    fail "checksum with a backslash-prefixed sha256sum: $(cat "$TMP/err")"
+  fi
+
   # success
   : > "$TMP/github_path"
   out=$(runi env); status=$?
