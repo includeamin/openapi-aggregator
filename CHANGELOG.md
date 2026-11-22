@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-11-22
+
+### Documentation
+
+- Document glob sources
+
+### Features
+
+- *(core)* Add glob path helpers and validate glob sources
+- *(core)* Expand glob sources into one source per file
+- Expand glob sources from the file system
+- *(web)* Expand glob sources from workspace files
+
 ## [0.14.3] - 2026-11-22
 
 ### Documentation
