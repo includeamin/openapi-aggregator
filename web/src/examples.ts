@@ -315,6 +315,45 @@ components:
         actor: { type: string }
 `;
 
+const GLOB_USERS = `openapi: 3.0.3
+info:
+  title: Users API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      summary: List users
+      responses:
+        '200':
+          description: Users
+`;
+
+const GLOB_ORDERS = `openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.0.0
+paths:
+  /orders:
+    get:
+      summary: List orders
+      responses:
+        '200':
+          description: Orders
+`;
+
+const GLOB_BILLING = `openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+paths:
+  /billing:
+    get:
+      summary: Billing overview
+      responses:
+        '200':
+          description: Billing
+`;
+
 export const EXAMPLES: Example[] = [
   {
     id: 'rename',
@@ -470,6 +509,21 @@ merge:
     files: [
       { name: 'specs/billing.yaml', content: HIDE_BILLING },
       { name: 'specs/users.yaml', content: HIDE_USERS },
+    ],
+  },
+  {
+    id: 'glob',
+    title: 'Glob sources (one source per file)',
+    config: `# One pattern, one source per matching file, sorted by name.
+# Each source is named after its file (billing, orders, users).
+# Add specs/shipping.yaml to the workspace and it joins the merge automatically.
+sources:
+  - path: ./specs/*.yaml
+`,
+    files: [
+      { name: 'specs/users.yaml', content: GLOB_USERS },
+      { name: 'specs/orders.yaml', content: GLOB_ORDERS },
+      { name: 'specs/billing.yaml', content: GLOB_BILLING },
     ],
   },
   {

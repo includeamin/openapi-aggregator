@@ -32,4 +32,16 @@ describe('engine', () => {
     expect(pendingRefs(config, [root], { 'a.yaml': 'A:\n  type: string\n' })).toEqual({ sources: [[]] });
     expect(aggregate(config, [root], { 'a.yaml': 'A:\n  type: string\n' }).text).toContain('type: string');
   });
+
+  it('expands glob sources against the workspace file names', () => {
+    const config = 'sources:\n  - path: ./specs/*.yaml\n';
+    const summary = parseConfig(config, ['specs/b.yaml', 'specs/a.yaml', 'other.yaml']);
+    expect(summary.sources.map((s) => [s.name, s.path])).toEqual([
+      ['a', 'specs/a.yaml'],
+      ['b', 'specs/b.yaml'],
+    ]);
+    expect(() => parseConfig(config, ['other.yaml'])).toThrow(/matched no files/);
+    // configs without globs do not need a file list
+    expect(parseConfig('sources:\n  - path: ./pets.yaml\n').sources).toHaveLength(1);
+  });
 });

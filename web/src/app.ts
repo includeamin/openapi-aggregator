@@ -106,7 +106,7 @@ export async function startApp(): Promise<void> {
 
   function currentSources(): SourceSummary[] {
     try {
-      return parseConfig(state.config).sources;
+      return parseConfig(state.config, state.files.map((f) => f.name)).sources;
     } catch {
       return [];
     }
@@ -167,7 +167,7 @@ export async function startApp(): Promise<void> {
     if (!blocked) return;
     let hosts: string[] = [];
     try {
-      hosts = parseConfig(state.config).sources.flatMap((s) => {
+      hosts = parseConfig(state.config, state.files.map((f) => f.name)).sources.flatMap((s) => {
         try {
           return s.url ? [new URL(s.url).host] : [];
         } catch {
