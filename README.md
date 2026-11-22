@@ -43,6 +43,14 @@ Uninstall:
 curl -sSfL https://raw.githubusercontent.com/includeamin/openapi-aggregator/main/install.sh | sh -s -- --uninstall
 ```
 
+### From crates.io
+
+```sh
+cargo install openapi-aggregator
+```
+
+The library is published as `openapi-aggregator` (with the pure merge logic in `openapi-aggregator-core`).
+
 ### From source
 
 ```sh
@@ -52,6 +60,10 @@ cargo install --path crates/openapi-aggregator
 ### Pre-built binaries
 
 Download from [GitHub Releases](../../releases). Binaries are available for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows (x86_64).
+
+### Where releases are published
+
+Every release publishes the GitHub Release binaries (with `checksums.txt`) and the Docker image. **Feature releases** (a minor or major version, for example `0.16.0`) are also published to crates.io; patch releases and dependency updates are not, because crates.io versions can never be deleted. To get a patch release, use the binary, the Docker image or `cargo install --git https://github.com/includeamin/openapi-aggregator --tag <version> openapi-aggregator`.
 
 ## CLI Usage
 
