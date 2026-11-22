@@ -227,14 +227,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: includeamin/openapi-aggregator@v0.14.1
+      - uses: includeamin/openapi-aggregator@v0.14.2
         with:
           config: openapi-aggregator.yaml
           output: openapi.yaml        # the committed spec to compare against
           deny-warnings: true
 ```
 
-Pin an exact release: the action installs **the version you pin** (`@v0.14.1` installs `v0.14.1`), downloads that release's binary and verifies it against the release's `checksums.txt` before running it. Use `v0.14.1` or later: `v0.14.0` shipped the Action with an installer bug that makes the install step fail, so do not use it as the Action's version.
+Pin an exact release: the action installs **the version you pin** (`@v0.14.2` installs `v0.14.2`), downloads that release's binary and verifies it against the release's `checksums.txt` before running it. Use `v0.14.2` or later: `v0.14.0` shipped the Action with an installer bug that makes the install step fail, so do not use it as the Action's version.
 
 | Input | Default | Meaning |
 |-------|---------|---------|
@@ -252,7 +252,7 @@ The `result` output is `passed`, `invalid` or `stale` (check mode) and is set ev
 To keep a generated spec in sync automatically, regenerate it and commit the result:
 
 ```yaml
-      - uses: includeamin/openapi-aggregator@v0.14.1
+      - uses: includeamin/openapi-aggregator@v0.14.2
         with:
           output: openapi.yaml
           mode: write
