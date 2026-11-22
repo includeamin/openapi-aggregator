@@ -109,7 +109,9 @@ PY
 
   # success
   : > "$TMP/github_path"
-  out=$(runi env)
+  out=$(runi env); status=$?
+  assert_eq "$status" "0" "a successful install exits 0"
+  assert_eq "$(cat "$TMP/err" | grep -c 'unbound\|error')" "0" "a successful install prints no errors"
   bin=$(printf '%s\n' "$out" | tail -n 1)
   assert_file "$bin" "installed binary exists"
   assert_eq "$("$bin")" "stub 1.2.3" "installed binary runs"
