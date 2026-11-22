@@ -14,6 +14,7 @@ Available as both a **Rust library** and a **CLI tool**.
 - **Operation filters** – hide internal endpoints (by path glob, tag, `operationId` or an `x-` flag), globally or per source, with unused components and tags pruned
 - **GitHub Action and Docker image** – one CI step regenerates the spec and fails when the committed one is stale; a multi-arch image is published on every release
 - **Glob sources** – `path: specs/*.yaml` expands into one source per matching file, in the CLI and in the playground
+- **Per-source path prefixes** – `path_prefix: /v2` on a source, instead of the all-or-nothing `prefix_paths`
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -224,6 +225,32 @@ sources:
 - **Sandbox:** matched files are sources you named in the config, so they are not sandboxed (like an explicit `path:`); their external `$ref`s follow the usual sandbox rules.
 - **Playground:** there are no real folders, so a pattern matches the workspace file names (`./specs/*.yaml` matches a workspace file named `specs/users.yaml`). Add a file with a matching name and it joins the merge.
 
+## Path prefixes
+
+`merge.prefix_paths: true` prefixes **every** source with `/{source_name}`. A source can instead have its own prefix with `path_prefix`:
+
+```yaml
+merge:
+  prefix_paths: true          # sources without their own prefix still get /{name}
+sources:
+  - name: billing
+    path: billing.yaml
+    path_prefix: /v2          # /v2/invoices instead of /billing/invoices
+  - name: users
+    path: users.yaml
+    path_prefix: /            # opt out: paths stay as written
+  - name: orders
+    path: orders.yaml         # no path_prefix: /orders/... from prefix_paths
+  - path: 'services/*/api.yaml'
+    path_prefix: '/{name}/v1' # {name} is each file's own name: /billing_api/v1/...
+```
+
+- **Precedence:** a source's `path_prefix` replaces the automatic `/{name}` prefix for that source (never both). `/` means "no prefix", which is how a source opts out of `prefix_paths: true`. `path_prefix` also works without `prefix_paths`, and on `url:` sources.
+- **Placeholder:** `{name}` becomes the source's name, sanitised the same way as the automatic prefix (`my api` becomes `my_api`). It is what makes one `path_prefix` usable for every file a [glob source](#glob-sources) matches.
+- **Validation:** the value must start with `/`, may not be empty (use `/`), contain `//` or whitespace, and the only braces allowed are `{name}` (other braces would look like path parameters). A trailing `/` is trimmed.
+- **Conflicts:** prefixes are applied before conflicts are detected, so two sources defining the same path no longer conflict when their prefixes differ. With `conflict_strategy: rename`, a conflicting path is moved to `/{name}` plus the source's own prefix plus the path (`/billing/v2/invoices`).
+- **Not affected:** webhooks and `servers` are not prefixed, and `#/paths/...` references and `links.operationRef` are not rewritten (the same is true of `prefix_paths`). The operation [filters](#hiding-internal-endpoints) match the paths as written in the source, before prefixing.
+
 ## Hiding internal endpoints
 
 Build a public spec from sources that also describe internal endpoints by filtering operations out. Filters run **per source, before the merge**, so a hidden operation can never cause a path or component conflict (two services can both expose `/internal/metrics`).
@@ -373,7 +400,7 @@ Only real conflicts trigger the conflict strategy:
 | `overwrite` | Last source wins (per operation)         | Last source wins                         |
 | `rename`    | Move the source's path to `/{source_name}{path}` | Rename to `{source_name}_{component}` |
 
-When `prefix_paths: true`, **all** paths are prefixed regardless of conflicts.
+When `prefix_paths: true`, **all** paths are prefixed regardless of conflicts, except for sources that set their own [`path_prefix`](#path-prefixes) (which replaces the automatic prefix).
 
 When using `rename`, any `$ref` pointing to a renamed component is rewritten automatically, and renamed names never overwrite an existing one (`b_2_Pet` is used if `b_Pet` is taken). Source names are sanitised (`my api` → `my_api`) wherever they become part of a path or component name.
 
