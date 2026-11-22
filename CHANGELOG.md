@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-11-22
+
+### CI
+
+- Publish checksums and a multi-arch Docker image on release
+
+### Documentation
+
+- Document the GitHub Action and the Docker image
+
+### Features
+
+- *(action)* Add a checksum-verifying installer script
+- *(action)* Add the check runner script
+- *(action)* Add the composite GitHub Action and its CI self-test
+
 ## [0.13.0] - 2026-11-21
 
 ### Documentation
