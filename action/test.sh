@@ -37,6 +37,7 @@ sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{
 
 # --- tests for install.sh --------------------------------------------------
 
+# shellcheck disable=SC2030,SC2031  # env is set in subshells on purpose
 test_install() {
   # shellcheck source=install.sh
   . "$HERE/install.sh"
@@ -140,6 +141,107 @@ PY
 }
 
 test_install
+
+# --- tests for run.sh ------------------------------------------------------
+
+# shellcheck disable=SC2016  # single quotes are deliberate: hostile values must not be expanded
+test_run() {
+  # shellcheck source=run.sh
+  . "$HERE/run.sh"
+
+  # build_args: every case runs in a subshell so ARGS and failures do not leak
+  args_of() { ( build_args >/dev/null 2>&1 && printf '%s\n' "${ARGS[@]}" ) | paste -sd' ' -; }
+  assert_eq "$(INPUT_MODE=check INPUT_CONFIG=cfg.yaml INPUT_OUTPUT=out.yaml INPUT_DENY_WARNINGS=true INPUT_ALLOW_OUTSIDE=true args_of)" \
+    "--check -c cfg.yaml -o out.yaml --deny-warnings --allow-outside-config-dir" "check mode, all options"
+  assert_eq "$(INPUT_MODE=check INPUT_CONFIG=cfg.yaml INPUT_OUTPUT='' INPUT_DENY_WARNINGS=false INPUT_ALLOW_OUTSIDE=false args_of)" \
+    "--check -c cfg.yaml" "check mode, minimal"
+  assert_eq "$(INPUT_MODE=write INPUT_CONFIG=cfg.yaml INPUT_OUTPUT=out.yaml INPUT_DENY_WARNINGS=true INPUT_ALLOW_OUTSIDE=false args_of)" \
+    "-c cfg.yaml -o out.yaml" "write mode"
+  if (INPUT_MODE=write INPUT_CONFIG=cfg.yaml INPUT_OUTPUT='' build_args) >/dev/null 2>"$TMP/err"; then
+    fail "write mode without output must fail"; else pass; fi
+  assert_contains "$(cat "$TMP/err")" "mode 'write' requires the 'output' input" "write mode message"
+  if (INPUT_MODE=bogus INPUT_CONFIG=c build_args) >/dev/null 2>"$TMP/err"; then fail "unknown mode must fail"; else pass; fi
+  assert_contains "$(cat "$TMP/err")" "bogus" "unknown mode message"
+
+  # a stub CLI: records argv (one per line) and pwd, prints $STUB_STDERR to stderr, exits with $STUB_EXIT
+  mkdir -p "$TMP/work"
+  cat > "$TMP/stub-cli" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" > "$STUB_ARGV"
+pwd > "$STUB_PWD"
+printf '%s' "$STUB_STDERR" >&2
+[ -n "${STUB_STDERR_FILE:-}" ] && cat "$STUB_STDERR_FILE" >&2
+exit "${STUB_EXIT:-0}"
+STUB
+  chmod +x "$TMP/stub-cli"
+
+  runr() { # prints stdout; exit code returned; env assignments passed as arguments
+    : > "$TMP/gh_output"; : > "$TMP/gh_summary"; rm -f "$TMP/argv" "$TMP/pwd"
+    env BINARY="$TMP/stub-cli" INPUT_CONFIG=cfg.yaml INPUT_OUTPUT=out.yaml INPUT_DENY_WARNINGS=false \
+      INPUT_ALLOW_OUTSIDE=false INPUT_WORKDIR="$TMP/work" INPUT_MODE=check GITHUB_OUTPUT="$TMP/gh_output" \
+      GITHUB_STEP_SUMMARY="$TMP/gh_summary" STUB_ARGV="$TMP/argv" STUB_PWD="$TMP/pwd" STUB_EXIT=0 STUB_STDERR= \
+      RUNNER_TEMP="$TMP" "$@" bash "$HERE/run.sh" 2>/dev/null
+  }
+
+  # injection: hostile values arrive as a single argv entry and nothing runs
+  (cd "$TMP/work" && runr INPUT_CONFIG='a b; touch pwned' >/dev/null)
+  assert_contains "$(cat "$TMP/argv")" "a b; touch pwned" "config with spaces is one argument"
+  (cd "$TMP/work" && runr 'INPUT_CONFIG=$(touch pwned)' >/dev/null)
+  assert_contains "$(cat "$TMP/argv")" '$(touch pwned)' "command substitution is not expanded"
+  assert_no_file "$TMP/work/pwned" "nothing was executed"
+  assert_no_file "$TMP/pwned" "nothing was executed (cwd)"
+
+  # exit code 0
+  out=$(runr); code=$?
+  assert_eq "$code" "0" "passed exits 0"
+  assert_contains "$(cat "$TMP/gh_output")" "result=passed" "result=passed"
+  assert_contains "$(cat "$TMP/gh_summary")" "passed" "summary mentions passed"
+  assert_eq "$(cat "$TMP/pwd")" "$(cd "$TMP/work" && pwd)" "runs in the working directory"
+
+  # exit code 2: stale
+  out=$(runr STUB_EXIT=2 'STUB_STDERR=--- out.yaml
++++ regenerated
+-  title: Z
++  title: A
+output file out.yaml is out of date'); code=$?
+  assert_eq "$code" "2" "stale exits 2"
+  assert_contains "$(cat "$TMP/gh_output")" "result=stale" "result=stale"
+  assert_contains "$out" "::error title=Generated spec is out of date::" "stale annotation"
+  assert_contains "$out" "openapi-aggregator -c cfg.yaml -o out.yaml" "stale annotation tells how to fix it"
+  assert_contains "$(cat "$TMP/gh_summary")" '```diff' "summary has a diff fence"
+  assert_contains "$(cat "$TMP/gh_summary")" "+  title: A" "summary has the diff"
+
+  # exit code 1: invalid
+  out=$(runr STUB_EXIT=1 'STUB_STDERR=error[dangling-ref] /x: boom'); code=$?
+  assert_eq "$code" "1" "invalid exits 1"
+  assert_contains "$(cat "$TMP/gh_output")" "result=invalid" "result=invalid"
+  assert_contains "$out" "::error title=Validation failed::" "invalid annotation"
+  assert_contains "$(cat "$TMP/gh_summary")" "error[dangling-ref] /x: boom" "summary has the findings"
+
+  # any other exit code is passed through and reported as invalid
+  out=$(runr STUB_EXIT=3); code=$?
+  assert_eq "$code" "3" "other exit codes pass through"
+  assert_contains "$(cat "$TMP/gh_output")" "result=invalid" "other failures are not reported as passed"
+
+  # truncation
+  head -c 300000 /dev/zero | tr '\0' 'x' > "$TMP/big.log"
+  runr STUB_EXIT=1 "STUB_STDERR_FILE=$TMP/big.log" >/dev/null || true
+  assert_contains "$(cat "$TMP/gh_summary")" "truncated" "truncation notice"
+  size=$(wc -c < "$TMP/gh_summary" | tr -d ' ')
+  if [ "$size" -lt 150000 ]; then pass; else fail "summary is $size bytes"; fi
+
+  # annotation escaping of the output path
+  out=$(runr STUB_EXIT=2 'INPUT_OUTPUT=a%b
+c'); 
+  assert_contains "$out" "a%25b%0Ac" "annotation escapes % and newlines"
+
+  # write mode
+  runr INPUT_MODE=write >/dev/null
+  assert_eq "$(paste -sd' ' - < "$TMP/argv")" "-c cfg.yaml -o out.yaml" "write mode argv"
+  assert_not_contains "$(cat "$TMP/gh_output")" "result=stale" "write mode does not report stale"
+}
+
+test_run
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
