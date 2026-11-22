@@ -46,6 +46,41 @@ pub fn merge_specs_with_report(
     specs: Vec<(String, String, Value)>,
     config: &MergeConfig,
 ) -> Result<MergeReport, Error> {
+    let none = vec![None; specs.len()];
+    merge_impl(specs, none, config)
+}
+
+/// One source of a merge: its name, tag prefix, optional path prefix and spec.
+#[derive(Debug, Clone)]
+pub struct SourceSpec {
+    pub name: String,
+    pub tag_prefix: String,
+    /// The source's own `path_prefix` (see [`resolve_path_prefix`]); `None` follows
+    /// `MergeConfig::prefix_paths`.
+    pub path_prefix: Option<String>,
+    pub spec: Value,
+}
+
+/// Like [`merge_specs_with_report`], with per-source path prefixes.
+///
+/// A source with a `path_prefix` gets exactly that prefix (the automatic `/{name}` prefix of
+/// `prefix_paths` does not apply to it); sources without one behave as in
+/// [`merge_specs_with_report`].
+pub fn merge_sources(specs: Vec<SourceSpec>, config: &MergeConfig) -> Result<MergeReport, Error> {
+    let mut tuples = Vec::with_capacity(specs.len());
+    let mut prefixes = Vec::with_capacity(specs.len());
+    for source in specs {
+        tuples.push((source.name, source.tag_prefix, source.spec));
+        prefixes.push(source.path_prefix);
+    }
+    merge_impl(tuples, prefixes, config)
+}
+
+fn merge_impl(
+    specs: Vec<(String, String, Value)>,
+    path_prefixes: Vec<Option<String>>,
+    config: &MergeConfig,
+) -> Result<MergeReport, Error> {
     if specs.is_empty() {
         return Err(Error::NoSources);
     }
@@ -79,8 +114,11 @@ pub fn merge_specs_with_report(
     let mut merged_servers: Vec<Value> = Vec::new();
     let mut merged_custom_top_level = Map::new();
 
-    for (source_name, tag_prefix, mut spec) in specs {
+    for ((source_name, tag_prefix, mut spec), path_prefix) in specs.into_iter().zip(path_prefixes) {
         let ident = sanitize_ident(&source_name);
+        let own_prefix = path_prefix
+            .as_deref()
+            .map(|prefix| resolve_path_prefix(prefix, &source_name));
 
         if !shared_security {
             if let Some(requirements) = spec.get("security").cloned() {
@@ -109,16 +147,17 @@ pub fn merge_specs_with_report(
             spec.get("paths"),
             &mut merged_paths,
             &config.conflict_strategy,
-            |path| {
-                if config.prefix_paths {
-                    format!("/{ident}{path}")
-                } else {
-                    path.to_string()
-                }
+            |path| match &own_prefix {
+                Some(prefix) => format!("{prefix}{path}"),
+                None if config.prefix_paths => format!("/{ident}{path}"),
+                None => path.to_string(),
             },
-            |path, n| match n {
-                1 => format!("/{ident}{path}"),
-                n => format!("/{ident}_{n}{path}"),
+            |path, n| {
+                let own = own_prefix.as_deref().unwrap_or("");
+                match n {
+                    1 => format!("/{ident}{own}{path}"),
+                    n => format!("/{ident}_{n}{own}{path}"),
+                }
             },
         )?;
 
@@ -1573,5 +1612,187 @@ mod tests {
         assert_eq!(resolve_path_prefix("/", "x"), "");
         assert_eq!(resolve_path_prefix("/{name}/v1", "my api"), "/my_api/v1");
         assert_eq!(resolve_path_prefix("/{name}", "billing"), "/billing");
+    }
+
+    fn one_path(path: &str, summary: &str) -> Value {
+        spec_with(
+            json!({path: {"get": {"summary": summary, "responses": {"200": {"description": "ok"}}}}}),
+            json!({}),
+        )
+    }
+
+    fn src(name: &str, prefix: Option<&str>, spec: Value) -> SourceSpec {
+        SourceSpec {
+            name: name.into(),
+            tag_prefix: name.into(),
+            path_prefix: prefix.map(String::from),
+            spec,
+        }
+    }
+
+    fn path_keys(report: &MergeReport) -> Vec<String> {
+        report.spec["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn with_prefix_paths(strategy: ConflictStrategy) -> MergeConfig {
+        MergeConfig {
+            prefix_paths: true,
+            conflict_strategy: strategy,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn own_prefix_replaces_the_automatic_one() {
+        let report = merge_sources(
+            vec![
+                src("a", Some("/v2"), one_path("/users", "a")),
+                src("b", None, one_path("/other", "b")),
+            ],
+            &with_prefix_paths(ConflictStrategy::Error),
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/v2/users", "/b/other"]);
+    }
+
+    #[test]
+    fn a_slash_prefix_opts_out_of_prefix_paths() {
+        let report = merge_sources(
+            vec![
+                src("a", Some("/"), one_path("/users", "a")),
+                src("b", None, one_path("/other", "b")),
+            ],
+            &with_prefix_paths(ConflictStrategy::Error),
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/users", "/b/other"]);
+    }
+
+    #[test]
+    fn name_placeholder_is_sanitised_like_the_automatic_prefix() {
+        let report = merge_sources(
+            vec![src("my api", Some("/{name}/v1"), one_path("/users", "a"))],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/my_api/v1/users"]);
+    }
+
+    #[test]
+    fn own_prefix_applies_without_prefix_paths_and_others_are_untouched() {
+        let report = merge_sources(
+            vec![
+                src("a", Some("/v2"), one_path("/users", "a")),
+                src("b", None, one_path("/users", "b")),
+            ],
+            &MergeConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/v2/users", "/users"]);
+    }
+
+    #[test]
+    fn rename_fallback_includes_the_sources_own_prefix() {
+        // different prefixes: no conflict at all
+        let report = merge_sources(
+            vec![
+                src("a", None, one_path("/users", "a")),
+                src("b", Some("/v2"), one_path("/users", "b")),
+            ],
+            &with_prefix_paths(ConflictStrategy::Rename),
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/a/users", "/v2/users"]);
+
+        // same prefix: the later source is renamed as /{ident}/v2/users, then /{ident}_2/v2/users
+        let conflicting =
+            |name: &str, summary: &str| src(name, Some("/v2"), one_path("/users", summary));
+        let report = merge_sources(
+            vec![
+                conflicting("a", "1"),
+                conflicting("b", "2"),
+                conflicting("b", "3"),
+            ],
+            &MergeConfig {
+                conflict_strategy: ConflictStrategy::Rename,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            path_keys(&report),
+            vec!["/v2/users", "/b/v2/users", "/b_2/v2/users"]
+        );
+
+        // no own prefix: the existing /{ident}/path fallback is unchanged
+        let report = merge_sources(
+            vec![
+                src("a", None, one_path("/users", "1")),
+                src("b", None, one_path("/users", "2")),
+            ],
+            &MergeConfig {
+                conflict_strategy: ConflictStrategy::Rename,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(path_keys(&report), vec!["/users", "/b/users"]);
+    }
+
+    #[test]
+    fn conflicts_report_the_prefixed_path() {
+        let err = merge_sources(
+            vec![
+                src("a", Some("/v2"), one_path("/users", "1")),
+                src("b", Some("/v2"), one_path("/users", "2")),
+            ],
+            &MergeConfig::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("duplicate path '/v2/users'"), "{err}");
+    }
+
+    #[test]
+    fn webhooks_are_not_prefixed() {
+        let mut spec = spec_with(json!({}), json!({}));
+        spec["webhooks"] =
+            json!({"newPet": {"post": {"responses": {"200": {"description": "ok"}}}}});
+        let report =
+            merge_sources(vec![src("a", Some("/v2"), spec)], &MergeConfig::default()).unwrap();
+        assert!(report.spec["webhooks"]["newPet"].is_object());
+    }
+
+    #[test]
+    fn the_tuple_wrappers_behave_exactly_as_before() {
+        for prefix_paths in [false, true] {
+            let config = MergeConfig {
+                prefix_paths,
+                ..Default::default()
+            };
+            let old = merge_specs_with_report(
+                vec![
+                    ("petstore".into(), "petstore".into(), petstore_spec()),
+                    ("users".into(), "users".into(), users_spec()),
+                ],
+                &config,
+            )
+            .unwrap();
+            let new = merge_sources(
+                vec![
+                    src("petstore", None, petstore_spec()),
+                    src("users", None, users_spec()),
+                ],
+                &config,
+            )
+            .unwrap();
+            assert_eq!(old.spec, new.spec);
+            assert_eq!(old.warnings, new.warnings);
+        }
     }
 }
