@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.3] - 2026-11-22
+
+### Bug Fixes
+
+- *(ci)* Run the crates.io publish script from the workflow's own commit
+
 ## [0.15.2] - 2026-11-22
 
 ### CI
