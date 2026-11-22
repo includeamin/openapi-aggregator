@@ -43,7 +43,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      # The publish script always comes from the commit this workflow runs at, never from the
+      # ref being published: older tags do not contain it. It is copied outside the repository so
+      # `cargo publish` does not see an uncommitted directory.
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+      - name: Stash the release scripts
+        run: cp -r .github/scripts "$RUNNER_TEMP/release-scripts"
+
+      - name: Check out the ref to publish
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
@@ -66,4 +75,4 @@ jobs:
           EXPECTED_VERSION: ${{ steps.expected.outputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: bash .github/scripts/publish-crates.sh
+        run: bash "$RUNNER_TEMP/release-scripts/publish-crates.sh"
