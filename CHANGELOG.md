@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] - 2026-11-22
+
+### Miscellaneous
+
+- Configure dependabot version updates
+
 ## [0.15.0] - 2026-11-22
 
 ### Documentation
