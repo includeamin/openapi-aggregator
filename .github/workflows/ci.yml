@@ -50,6 +50,110 @@ jobs:
       - name: Smoke test
         run: ./target/release/openapi-aggregator --help
 
+  action:
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -x -P SCRIPTDIR action/*.sh
+      - name: Script tests
+        run: bash action/test.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the CLI
+        run: cargo build --release -p openapi-aggregator
+
+      - name: Self-test, up to date
+        id: pass
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: cfg.yaml
+          output: expected.yaml
+      - name: Assert passed
+        env:
+          RESULT: ${{ steps.pass.outputs.result }}
+        run: test "$RESULT" = passed
+
+      - name: Self-test, stale output (must fail)
+        id: stale
+        continue-on-error: true
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: cfg.yaml
+          output: stale.yaml
+      - name: Assert stale
+        env:
+          OUTCOME: ${{ steps.stale.outcome }}
+          RESULT: ${{ steps.stale.outputs.result }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$RESULT" = stale
+
+      - name: Self-test, invalid spec (must fail)
+        id: invalid
+        continue-on-error: true
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: invalid-cfg.yaml
+      - name: Assert invalid
+        env:
+          OUTCOME: ${{ steps.invalid.outcome }}
+          RESULT: ${{ steps.invalid.outputs.result }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$RESULT" = invalid
+
+      - name: Self-test, warnings pass by default
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: warn-cfg.yaml
+      - name: Self-test, warnings denied (must fail)
+        id: denied
+        continue-on-error: true
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: warn-cfg.yaml
+          deny-warnings: 'true'
+      - name: Assert denied
+        env:
+          OUTCOME: ${{ steps.denied.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: Self-test, write mode
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: cfg.yaml
+          output: written.yaml
+          mode: write
+      - name: Self-test, written file is up to date
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/release/openapi-aggregator
+          working-directory: action/fixtures
+          config: cfg.yaml
+          output: written.yaml
+
+  action-scripts-macos:
+    name: Action scripts (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Script tests
+        run: bash action/test.sh
+
   web:
     name: Web playground
     runs-on: ubuntu-latest

@@ -235,6 +235,12 @@ output file out.yaml is out of date'); code=$?
 c'); 
   assert_contains "$out" "a%25b%0Ac" "annotation escapes % and newlines"
 
+  # a relative binary path still works after changing into the working directory
+  mkdir -p "$TMP/rel"
+  cp "$TMP/stub-cli" "$TMP/rel/stub-cli"
+  (cd "$TMP" && runr BINARY=rel/stub-cli >/dev/null)
+  assert_eq "$(cat "$TMP/pwd")" "$(cd "$TMP/work" && pwd)" "relative binary path resolved before cd"
+
   # write mode
   runr INPUT_MODE=write >/dev/null
   assert_eq "$(paste -sd' ' - < "$TMP/argv")" "-c cfg.yaml -o out.yaml" "write mode argv"

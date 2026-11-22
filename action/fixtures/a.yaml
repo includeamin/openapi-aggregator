@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Service A
+  version: '1'
+paths:
+  /a:
+    get:
+      operationId: getA
+      responses:
+        '200':
+          description: ok

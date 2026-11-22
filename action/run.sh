@@ -79,6 +79,13 @@ main() {
   local workdir="${INPUT_WORKDIR:-.}"
   local binary="${BINARY:?BINARY is not set}"
 
+  # A relative path to the binary is relative to where we were started, not to workdir.
+  case "$binary" in
+    /* | [A-Za-z]:*) ;;
+    */*) binary="$PWD/$binary" ;;
+    *) ;;
+  esac
+
   build_args || exit 1
   cd "$workdir" || { echo "error: working-directory '$workdir' does not exist" >&2; exit 1; }
 

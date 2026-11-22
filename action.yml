@@ -1,0 +1,70 @@
+name: OpenAPI Aggregator
+description: Merge OpenAPI specs from several sources, validate the result, and fail the build when the committed spec is stale.
+author: includeamin
+branding:
+  icon: git-merge
+  color: blue
+
+inputs:
+  config:
+    description: Path to the aggregator config file.
+    default: openapi-aggregator.yaml
+  output:
+    description: >-
+      The committed merged spec. In check mode it is compared with a fresh merge (the step fails
+      when it is out of date); in write mode it is regenerated. Leave empty in check mode to only validate.
+    default: ''
+  deny-warnings:
+    description: Fail on warnings too (check mode).
+    default: 'false'
+  allow-outside-config-dir:
+    description: Let external $refs read files outside the config directory.
+    default: 'false'
+  working-directory:
+    description: Directory to run in.
+    default: '.'
+  version:
+    description: >-
+      Release to install, e.g. v0.14.0. Defaults to the version the action is pinned at
+      (uses: includeamin/openapi-aggregator@v0.14.0), or the latest release if pinned to a branch.
+    default: ''
+  mode:
+    description: "'check' (default) never writes; 'write' regenerates the output file."
+    default: check
+  binary:
+    description: Path to an existing openapi-aggregator binary. Skips the download and checksum verification.
+    default: ''
+
+outputs:
+  result:
+    description: "In check mode: 'passed', 'invalid' or 'stale'."
+    value: ${{ steps.run.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install openapi-aggregator
+      id: install
+      if: inputs.binary == ''
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ACTION_REF: ${{ github.action_ref }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        binary=$(bash "$ACTION_PATH/action/install.sh")
+        echo "binary=$binary" >> "$GITHUB_OUTPUT"
+
+    - name: Run openapi-aggregator
+      id: run
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        BINARY: ${{ inputs.binary != '' && inputs.binary || steps.install.outputs.binary }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_DENY_WARNINGS: ${{ inputs.deny-warnings }}
+        INPUT_ALLOW_OUTSIDE: ${{ inputs.allow-outside-config-dir }}
+        INPUT_WORKDIR: ${{ inputs.working-directory }}
+        INPUT_MODE: ${{ inputs.mode }}
+      run: bash "$ACTION_PATH/action/run.sh"
