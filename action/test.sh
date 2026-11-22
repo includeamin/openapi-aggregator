@@ -107,9 +107,27 @@ PY
     )
   }
 
+  # Git Bash's sha256sum prefixes its output with a backslash when the path contains
+  # backslashes (as Windows runner temp paths do); verification must still work.
+  mkdir -p "$TMP/fakebin"
+  cat > "$TMP/fakebin/sha256sum" <<'FAKE'
+#!/usr/bin/env python3
+import hashlib, sys
+digest = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
+print(chr(92) + digest + "  " + sys.argv[1])
+FAKE
+  chmod +x "$TMP/fakebin/sha256sum"
+  if (PATH="$TMP/fakebin:$PATH" verify_checksum "$RELEASE/$ASSET" "$RELEASE/checksums.txt" "$ASSET") 2>"$TMP/err"; then
+    pass
+  else
+    fail "checksum with a backslash-prefixed sha256sum: $(cat "$TMP/err")"
+  fi
+
   # success
   : > "$TMP/github_path"
-  out=$(runi env)
+  out=$(runi env); status=$?
+  assert_eq "$status" "0" "a successful install exits 0"
+  assert_eq "$(cat "$TMP/err" | grep -c 'unbound\|error')" "0" "a successful install prints no errors"
   bin=$(printf '%s\n' "$out" | tail -n 1)
   assert_file "$bin" "installed binary exists"
   assert_eq "$("$bin")" "stub 1.2.3" "installed binary runs"
@@ -139,8 +157,6 @@ PY
   if runi env RUNNER_OS=Plan9 >/dev/null; then fail "unsupported platform must fail"; else pass; fi
   assert_contains "$(cat "$TMP/err")" "unsupported" "unsupported platform error"
 }
-
-test_install
 
 # --- tests for run.sh ------------------------------------------------------
 
@@ -247,7 +263,11 @@ c');
   assert_not_contains "$(cat "$TMP/gh_output")" "result=stale" "write mode does not report stale"
 }
 
-test_run
+case "${ONLY:-all}" in
+  install) test_install ;;
+  run) test_run ;;
+  *) test_install; test_run ;;
+esac
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

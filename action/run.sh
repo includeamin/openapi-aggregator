@@ -44,12 +44,13 @@ build_args() {
   return 0
 }
 
-# Escape text for the data part of a GitHub workflow command.
+# Escape text for the data part of a GitHub workflow command. The patterns live in variables
+# because bash 3.2 (the macOS default) keeps quote characters inside ${var//'x'/'y'} literally.
 escape_data() {
-  local s="$1"
-  s="${s//'%'/'%25'}"
-  s="${s//$'\r'/'%0D'}"
-  s="${s//$'\n'/'%0A'}"
+  local s="$1" pct='%' cr=$'\r' nl=$'\n'
+  s=${s//"$pct"/%25}
+  s=${s//"$cr"/%0D}
+  s=${s//"$nl"/%0A}
   printf '%s' "$s"
 }
 

@@ -53,9 +53,11 @@ resolve_version() {
   esac
 }
 
+# Print the SHA-256 of a file. GNU sha256sum (Git Bash on Windows) prefixes the hash with a
+# backslash when the path contains backslashes; strip it.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum "$1" | awk '{ h = $1; sub(/^\\/, "", h); print h }'
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi
@@ -85,8 +87,16 @@ extract() { # archive destination
   esac
 }
 
+# The download directory is global so the EXIT trap can still see it after main returns.
+WORK_DIR=""
+cleanup_download() {
+  if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+    rm -rf "$WORK_DIR"
+  fi
+}
+
 main() {
-  local target tag ext bin asset base scratch work install_dir
+  local target tag ext bin asset base scratch install_dir
   target=$(detect_target)
   tag=$(resolve_version)
   case "$target" in
@@ -97,19 +107,19 @@ main() {
   base="${OPENAPI_AGGREGATOR_BASE_URL:-https://github.com/$REPO/releases/download}/$tag"
   scratch="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   mkdir -p "$scratch"
-  work=$(mktemp -d "$scratch/openapi-aggregator-download.XXXXXX")
-  trap 'rm -rf "$work"' EXIT
+  WORK_DIR=$(mktemp -d "$scratch/openapi-aggregator-download.XXXXXX")
+  trap cleanup_download EXIT
 
   log "installing $tag for $target"
-  curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" \
+  curl -fsSL --retry 3 -o "$WORK_DIR/$asset" "$base/$asset" \
     || die "download failed: $base/$asset (does release $tag exist and have a $target build?)"
-  curl -fsSL --retry 3 -o "$work/checksums.txt" "$base/checksums.txt" \
+  curl -fsSL --retry 3 -o "$WORK_DIR/checksums.txt" "$base/checksums.txt" \
     || die "could not download checksums.txt for $tag; releases from before checksums were published cannot be verified, pin a newer version"
-  verify_checksum "$work/$asset" "$work/checksums.txt" "$asset"
+  verify_checksum "$WORK_DIR/$asset" "$WORK_DIR/checksums.txt" "$asset"
 
   install_dir="$scratch/openapi-aggregator-$tag"
   mkdir -p "$install_dir"
-  extract "$work/$asset" "$install_dir"
+  extract "$WORK_DIR/$asset" "$install_dir"
   chmod +x "$install_dir/$bin"
 
   if [ -n "${GITHUB_PATH:-}" ]; then
