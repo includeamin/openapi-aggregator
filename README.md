@@ -13,6 +13,7 @@ Available as both a **Rust library** and a **CLI tool**.
 - **Validation and CI check** – `--check` validates the merged spec and fails the build when it is invalid or when a committed output file is stale
 - **Operation filters** – hide internal endpoints (by path glob, tag, `operationId` or an `x-` flag), globally or per source, with unused components and tags pruned
 - **GitHub Action and Docker image** – one CI step regenerates the spec and fails when the committed one is stale; a multi-arch image is published on every release
+- **Glob sources** – `path: specs/*.yaml` expands into one source per matching file, in the CLI and in the playground
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -190,6 +191,26 @@ Example GitHub Actions step that keeps a committed spec in sync:
 ```
 
 The same validator is available as `openapi_aggregator::validate(&spec)`, and the playground shows its findings in the problems panel.
+
+## Glob sources
+
+A file source's `path` may be a glob, which expands into one source per matching file before anything is loaded:
+
+```yaml
+sources:
+  - path: specs/*.yaml              # specs/billing.yaml, specs/users.yaml, ...
+  - path: services/*/api.yaml       # services/billing/api.yaml, ...
+    tag_prefix: svc
+```
+
+- **Syntax:** `*` matches within one path segment, `**` matches across segments. Nothing else is special. Note that `**` needs at least one directory: `specs/**/x.yaml` does not match `specs/x.yaml`, so list both patterns if you need both. Globs are only for `path:`, never for `url:`.
+- **Names:** each match is named by its path relative to the pattern's fixed folder, without the extension, with `/` replaced by `_`: `specs/*.yaml` gives `billing`, `users`; `services/*/api.yaml` gives `billing_api`, `users_api`. Names never depend on which other files exist, and they can't collide because the paths are unique. A glob source can't have its own `name:` (it is a config error).
+- **Order:** matches are sorted by path and take the pattern's place among the other sources, so the merge order, and which source supplies `info`, is stable.
+- **Shared options:** `tag_prefix`, `additional_blocks` and `filter` on the pattern apply to every file it matches.
+- **Hidden files:** hidden files and folders (names starting with `.`) are skipped unless the pattern segment itself starts with a dot. Symlinked folders are not followed, and a pattern that would visit more than 100,000 entries is an error asking you to narrow it.
+- **No matches:** a pattern that matches nothing is an error, never a silently empty merge.
+- **Sandbox:** matched files are sources you named in the config, so they are not sandboxed (like an explicit `path:`); their external `$ref`s follow the usual sandbox rules.
+- **Playground:** there are no real folders, so a pattern matches the workspace file names (`./specs/*.yaml` matches a workspace file named `specs/users.yaml`). Add a file with a matching name and it joins the merge.
 
 ## Hiding internal endpoints
 
