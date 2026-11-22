@@ -7,6 +7,7 @@
 //! The crate also ships the `openapi-aggregator` command-line tool.
 
 pub mod error;
+mod glob;
 mod refs;
 pub mod source;
 
@@ -56,6 +57,10 @@ pub async fn aggregate_with_options(
     config: &Config,
     options: &AggregateOptions,
 ) -> Result<MergeReport, Error> {
+    // Glob sources become ordinary sources first, so everything below (the sandbox roots, the
+    // loader, external refs) only ever sees real files.
+    let expanded = glob::expand_config(config.clone())?;
+    let config = &expanded;
     if config.sources.is_empty() {
         return Err(CoreError::NoSources.into());
     }

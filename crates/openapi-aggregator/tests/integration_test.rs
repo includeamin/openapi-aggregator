@@ -906,3 +906,167 @@ async fn source_level_include_narrows_only_that_source() {
     let paths: Vec<&String> = report.spec["paths"].as_object().unwrap().keys().collect();
     assert_eq!(paths, vec!["/a", "/b"]);
 }
+
+// ---------------------------------------------------------------------------
+// glob sources
+// ---------------------------------------------------------------------------
+
+fn small_spec(title: &str, path: &str) -> String {
+    format!(
+        "openapi: 3.0.3\ninfo: {{title: {title}, version: '1'}}\npaths:\n  {path}:\n    get:\n      operationId: get{title}\n      responses:\n        '200': {{description: ok}}\n"
+    )
+}
+
+fn glob_dir(pattern: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("cfg.yaml"),
+        &format!("sources:\n  - path: '{pattern}'\n"),
+    );
+    dir
+}
+
+fn merged_paths(report: &openapi_aggregator::MergeReport) -> Vec<String> {
+    report.spec["paths"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn glob_merges_all_matches_in_sorted_order() {
+    let dir = glob_dir("specs/*.yaml");
+    write(&dir.path().join("specs/b.yaml"), &small_spec("B", "/b"));
+    write(&dir.path().join("specs/a.yaml"), &small_spec("A", "/a"));
+    write(&dir.path().join("specs/c.yaml"), &small_spec("C", "/c"));
+    write(&dir.path().join("specs/notes.txt"), "not a spec");
+
+    // notes.txt does not match *.yaml; the first sorted file supplies `info`
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(merged_paths(&report), vec!["/a", "/b", "/c"]);
+    assert_eq!(report.spec["info"]["title"], "A");
+
+    // adding another matching file does not disturb the others
+    write(&dir.path().join("specs/zzz.yaml"), &small_spec("Z", "/z"));
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(merged_paths(&report), vec!["/a", "/b", "/c", "/z"]);
+    assert_eq!(report.spec["info"]["title"], "A");
+}
+
+#[tokio::test]
+async fn nested_glob_names_sources_by_relative_path() {
+    let dir = glob_dir("services/*/api.yaml");
+    write(
+        &dir.path().join("services/billing/api.yaml"),
+        &small_spec("Billing", "/items"),
+    );
+    write(
+        &dir.path().join("services/users/api.yaml"),
+        &small_spec("Users", "/items"),
+    );
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - path: 'services/*/api.yaml'\nmerge:\n  conflict_strategy: rename\n",
+    );
+
+    let report = run_config(dir.path(), false).await.unwrap();
+    // `billing_api` sorts first and keeps /items; `users_api` is renamed with its source name
+    assert_eq!(merged_paths(&report), vec!["/items", "/users_api/items"]);
+}
+
+#[tokio::test]
+async fn double_star_skips_hidden_directories_and_symlinked_directories() {
+    let dir = glob_dir("specs/**/*.yaml");
+    write(
+        &dir.path().join("specs/deep/b.yaml"),
+        &small_spec("B", "/b"),
+    );
+    write(
+        &dir.path().join("specs/.git/c.yaml"),
+        &small_spec("C", "/c"),
+    );
+    write(&dir.path().join("outside/x.yaml"), &small_spec("X", "/x"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path().join("outside"), dir.path().join("specs/link")).unwrap();
+
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(merged_paths(&report), vec!["/b"]);
+}
+
+#[tokio::test]
+async fn a_pattern_without_matches_is_an_error() {
+    let dir = glob_dir("specs/*.yaml");
+    let err = run_config(dir.path(), false).await.unwrap_err().to_string();
+    assert!(err.contains("matched no files"), "{err}");
+}
+
+#[tokio::test]
+async fn explicit_sources_keep_their_position_next_to_a_glob() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("first.yaml"),
+        &small_spec("First", "/first"),
+    );
+    write(&dir.path().join("specs/a.yaml"), &small_spec("A", "/a"));
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - name: first\n    path: first.yaml\n  - path: 'specs/*.yaml'\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(merged_paths(&report), vec!["/first", "/a"]);
+    assert_eq!(report.spec["info"]["title"], "First");
+}
+
+#[tokio::test]
+async fn hand_built_configs_with_a_glob_work() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("specs/a.yaml"), &small_spec("A", "/a"));
+    write(&dir.path().join("specs/b.yaml"), &small_spec("B", "/b"));
+    let config = Config::from_yaml(&format!(
+        "sources:\n  - path: '{}/specs/*.yaml'\n",
+        dir.path().display()
+    ))
+    .unwrap();
+    let report = aggregate_with_options(&config, &AggregateOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(merged_paths(&report), vec!["/a", "/b"]);
+}
+
+#[tokio::test]
+async fn expanded_sources_still_resolve_and_sandbox_external_refs() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = root.path().join("cfg");
+    write(
+        &cfg.join("cfg.yaml"),
+        "sources:\n  - path: 'specs/*.api.yaml'\n",
+    );
+    let with_ref = |target: &str| {
+        format!(
+            "openapi: 3.0.3\ninfo: {{title: R, version: '1'}}\npaths:\n  /r:\n    get:\n      responses:\n        '200':\n          description: ok\n          content:\n            application/json:\n              schema: {{$ref: '{target}'}}\n"
+        )
+    };
+    write(
+        &cfg.join("specs/a.api.yaml"),
+        &with_ref("./shared/defs.yaml#/Def"),
+    );
+    write(
+        &cfg.join("specs/shared/defs.yaml"),
+        "Def:\n  type: string\n",
+    );
+    let report = run_config(&cfg, false).await.unwrap();
+    assert_eq!(
+        report.spec["components"]["schemas"]["Def"]["type"],
+        "string"
+    );
+
+    write(
+        &cfg.join("specs/a.api.yaml"),
+        &with_ref("../../outside.yaml#/X"),
+    );
+    write(&root.path().join("outside.yaml"), "X:\n  type: string\n");
+    let err = run_config(&cfg, false).await.unwrap_err().to_string();
+    assert!(err.contains("outside the config directory"), "{err}");
+}
