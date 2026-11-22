@@ -17,6 +17,7 @@ async fn load_yaml_file_source() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "petstore");
@@ -32,6 +33,7 @@ async fn load_json_file_source() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
     let (name, spec) = load_source(&source).await.unwrap();
     assert_eq!(name, "conflict");
@@ -48,6 +50,7 @@ async fn aggregate_two_specs_from_config() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("users".into()),
@@ -55,6 +58,7 @@ async fn aggregate_two_specs_from_config() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -101,6 +105,7 @@ async fn aggregate_applies_additional_blocks_per_source() {
                     }
                 })),
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("users".into()),
@@ -108,6 +113,7 @@ async fn aggregate_applies_additional_blocks_per_source() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -132,6 +138,7 @@ async fn aggregate_conflict_errors_by_default() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("conflict".into()),
@@ -139,6 +146,7 @@ async fn aggregate_conflict_errors_by_default() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -161,6 +169,7 @@ async fn aggregate_conflict_rename_rewrites_refs() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("alt".into()),
@@ -168,6 +177,7 @@ async fn aggregate_conflict_rename_rewrites_refs() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -275,6 +285,7 @@ async fn http_source_with_headers() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
 
     let (name, spec) = load_source(&source).await.unwrap();
@@ -308,6 +319,7 @@ async fn http_source_rejects_non_success_status() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
 
     let error = load_source(&source).await.unwrap_err();
@@ -338,6 +350,7 @@ async fn http_source_expands_env_vars_in_headers() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
 
     let (_, spec) = load_source(&source).await.unwrap();
@@ -362,6 +375,7 @@ async fn aggregate_with_report_returns_version_warnings() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("new".into()),
@@ -369,6 +383,7 @@ async fn aggregate_with_report_returns_version_warnings() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -447,6 +462,7 @@ async fn http_errors_do_not_leak_expanded_env_secrets() {
         tag_prefix: None,
         additional_blocks: None,
         filter: None,
+        path_prefix: None,
     };
 
     let err = load_source(&source).await.unwrap_err();
@@ -483,6 +499,7 @@ async fn swagger2_source_merges_with_openapi3_and_refs_resolve() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
             Source::File {
                 name: Some("legacy".into()),
@@ -490,6 +507,7 @@ async fn swagger2_source_merges_with_openapi3_and_refs_resolve() {
                 tag_prefix: None,
                 additional_blocks: None,
                 filter: None,
+                path_prefix: None,
             },
         ],
         output: Default::default(),
@@ -724,6 +742,7 @@ fn http_config(url: String, headers: &[(&str, &str)]) -> Config {
             tag_prefix: None,
             additional_blocks: None,
             filter: None,
+            path_prefix: None,
         }],
         output: Default::default(),
         merge: MergeConfig::default(),

@@ -52,6 +52,9 @@ pub enum Source {
         additional_blocks: Option<Value>,
         /// Operations to hide from (or keep of) this source, in addition to `merge.filter`.
         filter: Option<FilterConfig>,
+        /// Prefix for every path of this source (`/v2`, `/{name}/v1`). Replaces the automatic
+        /// `/{source_name}` prefix of `merge.prefix_paths` for this source; `/` means no prefix.
+        path_prefix: Option<String>,
     },
     File {
         name: Option<String>,
@@ -64,6 +67,9 @@ pub enum Source {
         additional_blocks: Option<Value>,
         /// Operations to hide from (or keep of) this source, in addition to `merge.filter`.
         filter: Option<FilterConfig>,
+        /// Prefix for every path of this source (`/v2`, `/{name}/v1`). Replaces the automatic
+        /// `/{source_name}` prefix of `merge.prefix_paths` for this source; `/` means no prefix.
+        path_prefix: Option<String>,
     },
 }
 
@@ -79,6 +85,7 @@ struct RawSource {
     tag_prefix: Option<String>,
     additional_blocks: Option<Value>,
     filter: Option<FilterConfig>,
+    path_prefix: Option<String>,
 }
 
 impl TryFrom<RawSource> for Source {
@@ -92,6 +99,9 @@ impl TryFrom<RawSource> for Source {
             .unwrap_or_else(|| "source".into());
         if let Some(filter) = &raw.filter {
             filter.validate(&format!("{label} filter"))?;
+        }
+        if let Some(prefix) = &raw.path_prefix {
+            validate_path_prefix(prefix).map_err(|e| format!("{label}: {e}"))?;
         }
         if let (Some(path), Some(_)) = (&raw.path, &raw.name) {
             let pattern = path.to_string_lossy();
@@ -109,6 +119,7 @@ impl TryFrom<RawSource> for Source {
                 tag_prefix: raw.tag_prefix,
                 additional_blocks: raw.additional_blocks,
                 filter: raw.filter,
+                path_prefix: raw.path_prefix,
             }),
             (None, Some(path)) => {
                 if raw.headers.is_some() {
@@ -122,6 +133,7 @@ impl TryFrom<RawSource> for Source {
                     tag_prefix: raw.tag_prefix,
                     additional_blocks: raw.additional_blocks,
                     filter: raw.filter,
+                    path_prefix: raw.path_prefix,
                 })
             }
             (Some(_), Some(_)) => Err(format!(
@@ -130,6 +142,32 @@ impl TryFrom<RawSource> for Source {
             (None, None) => Err(format!("{label} needs either 'path' or 'url'")),
         }
     }
+}
+
+/// Check a `path_prefix` value: it must start with `/`, may contain only the `{name}`
+/// placeholder in braces, and must not contain `//` or whitespace.
+fn validate_path_prefix(prefix: &str) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("path_prefix must not be empty (use '/' for no prefix)".into());
+    }
+    if !prefix.starts_with('/') {
+        return Err(format!("path_prefix '{prefix}' must start with '/'"));
+    }
+    if prefix.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "path_prefix '{prefix}' must not contain whitespace"
+        ));
+    }
+    if prefix.contains("//") {
+        return Err(format!("path_prefix '{prefix}' must not contain '//'"));
+    }
+    let without_placeholder = prefix.replace("{name}", "");
+    if without_placeholder.contains(['{', '}']) {
+        return Err(format!(
+            "path_prefix '{prefix}': only {{name}} is allowed in braces (other braces look like path parameters)"
+        ));
+    }
+    Ok(())
 }
 
 /// Extract the host from a URL, e.g. `https://user@api.test:8443/x` → `api.test`.
@@ -158,6 +196,15 @@ impl Source {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".into())
             }),
+        }
+    }
+
+    /// The per-source path prefix as written in the config, if any.
+    pub fn path_prefix(&self) -> Option<&str> {
+        match self {
+            Source::Http { path_prefix, .. } | Source::File { path_prefix, .. } => {
+                path_prefix.as_deref()
+            }
         }
     }
 
@@ -445,6 +492,7 @@ mod tests {
             tag_prefix: None,
             additional_blocks: None,
             filter: None,
+            path_prefix: None,
         };
         assert_eq!(source.display_name(), "billing.example.com");
     }
@@ -537,5 +585,48 @@ merge:
         assert!(ok.is_ok(), "{ok:?}");
         let url = Config::from_yaml("sources:\n  - url: 'https://x.test/*'\n    name: x\n");
         assert!(url.is_ok(), "{url:?}");
+    }
+
+    #[test]
+    fn path_prefixes_parse_on_every_kind_of_source() {
+        for prefix in ["/v2", "/v2/", "/", "/{name}/v1"] {
+            let yaml = format!(
+                "sources:\n  - name: a\n    path: a.yaml\n    path_prefix: '{prefix}'\n  - name: b\n    url: https://x.test/b\n    path_prefix: '{prefix}'\n  - path: 'services/*/api.yaml'\n    path_prefix: '{prefix}'\n"
+            );
+            let config = Config::from_yaml(&yaml).unwrap_or_else(|e| panic!("{prefix}: {e}"));
+            assert!(
+                config
+                    .sources
+                    .iter()
+                    .all(|s| s.path_prefix() == Some(prefix)),
+                "{prefix}"
+            );
+        }
+        let none =
+            Config::from_yaml("sources:\n  - path: a.yaml\n  - url: https://x.test/a\n").unwrap();
+        assert!(none.sources.iter().all(|s| s.path_prefix().is_none()));
+    }
+
+    #[test]
+    fn invalid_path_prefixes_are_config_errors() {
+        let cases = [
+            ("v2", "must start with '/'"),
+            ("", "must not be empty"),
+            ("/{tenant}", "only {name}"),
+            ("/a{name", "only {name}"),
+            ("/a//b", "//"),
+            ("/a b", "whitespace"),
+        ];
+        for (prefix, fragment) in cases {
+            let yaml = format!(
+                "sources:\n  - name: billing\n    path: a.yaml\n    path_prefix: '{prefix}'\n"
+            );
+            let err = Config::from_yaml(&yaml).unwrap_err().to_string();
+            assert!(
+                err.contains(fragment),
+                "'{prefix}': expected '{fragment}' in: {err}"
+            );
+            assert!(err.contains("source 'billing'"), "'{prefix}': {err}");
+        }
     }
 }

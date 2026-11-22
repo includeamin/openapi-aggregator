@@ -338,6 +338,15 @@ fn version_warnings(specs: &[(String, String, Value)]) -> Vec<String> {
 
 /// Make a source name safe for use in URL paths and component names
 /// (`^[a-zA-Z0-9._-]+$`).
+/// Resolve a source's `path_prefix`: `{name}` becomes the source's sanitised identifier and a
+/// trailing `/` is trimmed, so `/` (no prefix) resolves to the empty string.
+pub fn resolve_path_prefix(prefix: &str, source_name: &str) -> String {
+    prefix
+        .replace("{name}", &sanitize_ident(source_name))
+        .trim_end_matches('/')
+        .to_string()
+}
+
 fn sanitize_ident(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -1555,5 +1564,14 @@ mod tests {
         let servers = merged["servers"].as_array().unwrap();
         // Deduplicated by url
         assert_eq!(servers.len(), 2);
+    }
+
+    #[test]
+    fn resolves_path_prefixes() {
+        assert_eq!(resolve_path_prefix("/v2", "x"), "/v2");
+        assert_eq!(resolve_path_prefix("/v2/", "x"), "/v2");
+        assert_eq!(resolve_path_prefix("/", "x"), "");
+        assert_eq!(resolve_path_prefix("/{name}/v1", "my api"), "/my_api/v1");
+        assert_eq!(resolve_path_prefix("/{name}", "billing"), "/billing");
     }
 }
