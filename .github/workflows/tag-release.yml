@@ -35,6 +35,9 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       skip: ${{ steps.skip_check.outputs.skip }}
+      bump: ${{ steps.version.outputs.bump }}
+      # "true" only for feature releases (minor/major, not pre-releases); empty or "false" otherwise
+      publish: ${{ steps.flags.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,7 +118,16 @@ jobs:
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${CURRENT} → ${VERSION} (${BUMP})"
+
+      - name: Decide whether to publish to crates.io
+        id: flags
+        if: steps.skip_check.outputs.skip != 'true'
+        env:
+          BUMP: ${{ steps.version.outputs.bump }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash .github/scripts/release-flags.sh "$BUMP" "$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Update version in Cargo.toml
         if: steps.skip_check.outputs.skip != 'true'
