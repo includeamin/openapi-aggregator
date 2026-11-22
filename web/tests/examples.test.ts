@@ -25,16 +25,16 @@ describe('examples', () => {
       const result = await runPipeline(example.config, example.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
       return result.problems.filter((p) => p.kind === 'validation' && p.level === 'error');
     };
-    const remote = parseConfigSafe(example.config).some((s) => s.kind === 'url');
+    const remote = parseConfigSafe(example.config, example.files.map((f) => f.name)).some((s) => s.kind === 'url');
     it.skipIf(remote)(`${example.id}: merged output has no validation errors`, async () => {
       expect(await noValidationErrors()).toEqual([]);
     });
 
     it(`${example.id}: config parses`, () => {
-      expect(() => parseConfig(example.config)).not.toThrow();
+      expect(() => parseConfig(example.config, example.files.map((f) => f.name))).not.toThrow();
     });
 
-    const usesNetwork = parseConfigSafe(example.config).some((s) => s.kind === 'url');
+    const usesNetwork = parseConfigSafe(example.config, example.files.map((f) => f.name)).some((s) => s.kind === 'url');
     const expectsWarnings = example.id === 'swagger2';
     it.skipIf(usesNetwork || expectsWarnings)(`${example.id}: merges without errors or warnings`, async () => {
       const result = await runPipeline(example.config, example.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
@@ -89,6 +89,14 @@ describe('examples', () => {
     expect(text).not.toContain('Metrics');
   });
 
+  it('glob example expands the pattern from the workspace files', async () => {
+    const ex = findExample('glob');
+    expect(ex.id).toBe('glob');
+    const result = await runPipeline(ex.config, ex.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+    expect(result.problems).toEqual([]);
+    for (const path of ['/users:', '/orders:', '/billing:']) expect(result.text).toContain(path);
+  });
+
   it('per-operation example combines GET and POST on one path', async () => {
     const ex = findExample('per-operation');
     const { contents } = await resolveSources(parseConfig(ex.config).sources, ex.files, noNetwork);
@@ -97,9 +105,9 @@ describe('examples', () => {
   });
 });
 
-function parseConfigSafe(config: string) {
+function parseConfigSafe(config: string, files: string[]) {
   try {
-    return parseConfig(config).sources;
+    return parseConfig(config, files).sources;
   } catch {
     return [];
   }

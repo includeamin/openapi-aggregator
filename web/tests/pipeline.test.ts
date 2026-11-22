@@ -176,3 +176,30 @@ describe('validation findings', () => {
     expect(result.problems.filter((p) => p.kind === 'validation')).toEqual([]);
   });
 });
+
+describe('glob sources', () => {
+  const config = 'sources:\n  - path: ./specs/*.yaml\n';
+
+  it('merges every workspace file that matches and picks up new ones', async () => {
+    const files = [
+      { name: 'specs/b.yaml', content: spec('B', '  /b:\n    get: {responses: {"200": {description: ok}}}\n') },
+      { name: 'specs/a.yaml', content: spec('A') },
+    ];
+    const first = await runPipeline(config, files, deps());
+    expect(first.problems).toEqual([]);
+    expect(first.text).toContain('/a:');
+    expect(first.text).toContain('/b:');
+
+    const more = [...files, { name: 'specs/c.yaml', content: spec('C', '  /c:\n    get: {responses: {"200": {description: ok}}}\n') }];
+    const second = await runPipeline(config, more, deps());
+    expect(second.text).toContain('/c:');
+  });
+
+  it('reports a pattern without matches as a config problem', async () => {
+    const result = await runPipeline(config, [{ name: 'other.yaml', content: spec('X') }], deps());
+    expect(result.text).toBeNull();
+    expect(result.problems).toEqual([
+      expect.objectContaining({ level: 'error', kind: 'config', message: expect.stringContaining('matched no files') }),
+    ]);
+  });
+});

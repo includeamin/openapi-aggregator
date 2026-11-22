@@ -11,9 +11,9 @@ export interface PipelineResult {
 }
 
 export interface PipelineDeps {
-  parseConfig(yaml: string): ConfigSummary;
-  pendingRefs(yaml: string, contents: string[], docs: Record<string, string>): PendingRefs;
-  aggregate(yaml: string, contents: string[], docs: Record<string, string>): AggregateOutput;
+  parseConfig(yaml: string, files: string[]): ConfigSummary;
+  pendingRefs(yaml: string, contents: string[], docs: Record<string, string>, files: string[]): PendingRefs;
+  aggregate(yaml: string, contents: string[], docs: Record<string, string>, files: string[]): AggregateOutput;
   load: Loader;
 }
 
@@ -24,9 +24,11 @@ export function lineOf(message: string): number | undefined {
 
 /** Config → resolve sources → merge. Never throws; every failure becomes a Problem. */
 export async function runPipeline(config: string, files: WorkspaceFile[], deps: PipelineDeps): Promise<PipelineResult> {
+  // Glob sources are matched against the workspace file names.
+  const fileNames = files.map((f) => f.name);
   let summary: ConfigSummary;
   try {
-    summary = deps.parseConfig(config);
+    summary = deps.parseConfig(config, fileNames);
   } catch (e) {
     const message = errorMessage(e);
     return { text: null, format: 'yaml', problems: [{ level: 'error', kind: 'config', message, line: lineOf(message) }] };
@@ -38,7 +40,7 @@ export async function runPipeline(config: string, files: WorkspaceFile[], deps: 
   const docs: Record<string, string> = {};
   try {
     for (;;) {
-      const wanted = collectWanted(deps.pendingRefs(config, contents, docs), summary);
+      const wanted = collectWanted(deps.pendingRefs(config, contents, docs, fileNames), summary);
       if (!wanted.length) break;
       if (Object.keys(docs).length + wanted.length > MAX_DOCUMENTS) {
         throw new Error(`too many external documents (limit ${MAX_DOCUMENTS})`);
@@ -52,7 +54,7 @@ export async function runPipeline(config: string, files: WorkspaceFile[], deps: 
   }
 
   try {
-    const out = deps.aggregate(config, contents, docs);
+    const out = deps.aggregate(config, contents, docs, fileNames);
     const warnings: Problem[] = out.warnings.map((message) => ({ level: 'warning', kind: 'merge', message }));
     const findings: Problem[] = out.findings.map((f) => ({
       level: f.severity,

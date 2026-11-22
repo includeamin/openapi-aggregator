@@ -2,11 +2,12 @@
 //! this crate only parses the config and merges already-loaded spec text.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 use openapi_aggregator_core::{
-    bundle_source, check_document_cap, filter_source, merge_specs_with_report, missing_documents,
-    parse_content, prepare_source_with_notes, validate, Config, Error, OutputFormat,
-    PreparedSource, Source,
+    bundle_source, check_document_cap, expand_sources, filter_source, is_glob,
+    merge_specs_with_report, missing_documents, parse_content, prepare_source_with_notes, validate,
+    Config, Error, OutputFormat, PreparedSource, Source,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -49,8 +50,35 @@ fn format_name(format: &OutputFormat) -> &'static str {
     }
 }
 
+/// Parse the config and expand glob sources against the workspace file names.
+fn load_config(yaml: &str, files: &[String]) -> Result<Config, String> {
+    let mut config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    let candidates: Vec<String> = files.iter().map(|f| workspace_key(f)).collect();
+    for source in &mut config.sources {
+        if let Source::File { path, .. } = source {
+            let text = path.to_string_lossy().into_owned();
+            if is_glob(&text) {
+                *path = PathBuf::from(workspace_key(&text));
+            }
+        }
+    }
+    expand_sources(config, &candidates).map_err(|e| {
+        let message = e.to_string();
+        if message.contains("matched no files") {
+            format!("{message}; add files with matching names to the workspace")
+        } else {
+            message
+        }
+    })
+}
+
 pub fn summarize_config(yaml: &str) -> Result<ConfigSummary, String> {
-    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    summarize_config_with_files(yaml, &[])
+}
+
+/// Like [`summarize_config`], expanding glob sources against `files` (workspace file names).
+pub fn summarize_config_with_files(yaml: &str, files: &[String]) -> Result<ConfigSummary, String> {
+    let config = load_config(yaml, files)?;
     let sources = config
         .sources
         .iter()
@@ -151,7 +179,17 @@ pub fn pending_refs(
     contents: Vec<String>,
     docs: HashMap<String, String>,
 ) -> Result<PendingRefs, String> {
-    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    pending_refs_with_files(yaml, contents, docs, &[])
+}
+
+/// Like [`pending_refs`], expanding glob sources against `files`.
+pub fn pending_refs_with_files(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: HashMap<String, String>,
+    files: &[String],
+) -> Result<PendingRefs, String> {
+    let config = load_config(yaml, files)?;
     let prepared = prepare_all(&config, &contents)?;
     let docs = parse_docs(docs)?;
     let sources = config
@@ -176,7 +214,17 @@ pub fn aggregate_contents(
     contents: Vec<String>,
     docs: HashMap<String, String>,
 ) -> Result<AggregateOutput, String> {
-    let config = Config::from_yaml(yaml).map_err(|e| e.to_string())?;
+    aggregate_contents_with_files(yaml, contents, docs, &[])
+}
+
+/// Like [`aggregate_contents`], expanding glob sources against `files`.
+pub fn aggregate_contents_with_files(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: HashMap<String, String>,
+    files: &[String],
+) -> Result<AggregateOutput, String> {
+    let config = load_config(yaml, files)?;
     let prepared = prepare_all(&config, &contents)?;
     let docs = parse_docs(docs)?;
 
@@ -224,8 +272,11 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
 
 /// Parse and validate a config; returns a `ConfigSummary` or throws.
 #[wasm_bindgen(js_name = parseConfig)]
-pub fn parse_config(yaml: &str) -> Result<JsValue, JsError> {
-    to_js(&summarize_config(yaml).map_err(|e| JsError::new(&e))?)
+pub fn parse_config(yaml: &str, files: Option<Vec<String>>) -> Result<JsValue, JsError> {
+    to_js(
+        &summarize_config_with_files(yaml, &files.unwrap_or_default())
+            .map_err(|e| JsError::new(&e))?,
+    )
 }
 
 fn docs_from_js(docs: JsValue) -> Result<HashMap<String, String>, JsError> {
@@ -243,15 +294,37 @@ pub fn pending_refs_js(
     yaml: &str,
     contents: Vec<String>,
     docs: JsValue,
+    files: Option<Vec<String>>,
 ) -> Result<JsValue, JsError> {
-    to_js(&pending_refs(yaml, contents, docs_from_js(docs)?).map_err(|e| JsError::new(&e))?)
+    to_js(
+        &pending_refs_with_files(
+            yaml,
+            contents,
+            docs_from_js(docs)?,
+            &files.unwrap_or_default(),
+        )
+        .map_err(|e| JsError::new(&e))?,
+    )
 }
 
 /// Merge already-loaded spec texts (`contents[i]` belongs to `sources[i]`), bundling
 /// external refs from `docs` (location -> text); returns an `AggregateOutput` or throws.
 #[wasm_bindgen]
-pub fn aggregate(yaml: &str, contents: Vec<String>, docs: JsValue) -> Result<JsValue, JsError> {
-    to_js(&aggregate_contents(yaml, contents, docs_from_js(docs)?).map_err(|e| JsError::new(&e))?)
+pub fn aggregate(
+    yaml: &str,
+    contents: Vec<String>,
+    docs: JsValue,
+    files: Option<Vec<String>>,
+) -> Result<JsValue, JsError> {
+    to_js(
+        &aggregate_contents_with_files(
+            yaml,
+            contents,
+            docs_from_js(docs)?,
+            &files.unwrap_or_default(),
+        )
+        .map_err(|e| JsError::new(&e))?,
+    )
 }
 
 #[cfg(test)]
@@ -483,5 +556,78 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    fn names(files: &[&str]) -> Vec<String> {
+        files.iter().map(|f| f.to_string()).collect()
+    }
+
+    #[test]
+    fn glob_sources_expand_from_workspace_file_names() {
+        let summary = summarize_config_with_files(
+            "sources:\n  - path: ./specs/*.yaml\n",
+            &names(&[
+                "specs/b.yaml",
+                "./specs/a.yaml",
+                "other.yaml",
+                "specs/nested/x.yaml",
+            ]),
+        )
+        .unwrap();
+        let listed: Vec<(&str, Option<&str>)> = summary
+            .sources
+            .iter()
+            .map(|s| (s.name.as_str(), s.path.as_deref()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("a", Some("specs/a.yaml")), ("b", Some("specs/b.yaml"))]
+        );
+        assert!(summary.sources.iter().all(|s| s.kind == "file"));
+    }
+
+    #[test]
+    fn a_glob_without_matches_is_a_config_error_with_a_hint() {
+        let err = summarize_config_with_files(
+            "sources:\n  - path: specs/*.yaml\n",
+            &names(&["other.yaml"]),
+        )
+        .unwrap_err();
+        assert!(err.contains("matched no files"), "{err}");
+        assert!(err.contains("workspace"), "{err}");
+        // without any file list a glob cannot match
+        assert!(summarize_config("sources:\n  - path: specs/*.yaml\n").is_err());
+    }
+
+    #[test]
+    fn aggregate_and_pending_refs_use_the_expanded_sources() {
+        let config = "sources:\n  - path: ./specs/*.yaml\n";
+        let files = names(&["specs/pets.yaml", "specs/users.yaml"]);
+        let out = aggregate_contents_with_files(
+            config,
+            vec![PETS.into(), USERS.into()],
+            HashMap::new(),
+            &files,
+        )
+        .unwrap();
+        assert!(
+            out.text.contains("/pets:") && out.text.contains("/users:"),
+            "{}",
+            out.text
+        );
+
+        let pending = pending_refs_with_files(
+            config,
+            vec![PETS.into(), USERS.into()],
+            HashMap::new(),
+            &files,
+        )
+        .unwrap();
+        assert_eq!(pending.sources.len(), 2);
+
+        // one content per expanded source is required
+        let err = aggregate_contents_with_files(config, vec![PETS.into()], HashMap::new(), &files)
+            .unwrap_err();
+        assert!(err.contains("expected 2 source contents"), "{err}");
     }
 }
