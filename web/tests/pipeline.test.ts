@@ -203,3 +203,30 @@ describe('glob sources', () => {
     ]);
   });
 });
+
+describe('path prefixes', () => {
+  const items = (summary: string) =>
+    spec(summary, `  /items:\n    get: {summary: ${summary}, responses: {"200": {description: ok}}}\n`);
+  const files = [
+    { name: 'a.yaml', content: items('A') },
+    { name: 'b.yaml', content: items('B') },
+  ];
+
+  it('prefixes each source with its own path_prefix, with / opting out', async () => {
+    const config =
+      'sources:\n  - name: a\n    path: a.yaml\n    path_prefix: /v2\n  - name: b\n    path: b.yaml\n    path_prefix: /\nmerge:\n  prefix_paths: true\n';
+    const result = await runPipeline(config, files, deps());
+    expect(result.problems).toEqual([]);
+    expect(result.text).toContain('/v2/items:');
+    expect(result.text).toMatch(/\n  \/items:/);
+  });
+
+  it('reports an invalid path_prefix as a config problem', async () => {
+    const config = 'sources:\n  - name: a\n    path: a.yaml\n    path_prefix: v2\n';
+    const result = await runPipeline(config, files, deps());
+    expect(result.text).toBeNull();
+    expect(result.problems).toEqual([
+      expect.objectContaining({ level: 'error', kind: 'config', message: expect.stringContaining("must start with '/'") }),
+    ]);
+  });
+});

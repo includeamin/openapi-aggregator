@@ -97,6 +97,16 @@ describe('examples', () => {
     for (const path of ['/users:', '/orders:', '/billing:']) expect(result.text).toContain(path);
   });
 
+  it('path-prefixes example gives each source its own prefix', async () => {
+    const ex = findExample('path-prefixes');
+    expect(ex.id).toBe('path-prefixes');
+    const result = await runPipeline(ex.config, ex.files, { parseConfig, aggregate, pendingRefs, load: noNetwork });
+    expect(result.problems).toEqual([]);
+    expect(result.text).toContain('/v2/items:');
+    expect(result.text).toContain('/orders/items:');
+    expect(result.text).toMatch(/\n  \/items:/);
+  });
+
   it('per-operation example combines GET and POST on one path', async () => {
     const ex = findExample('per-operation');
     const { contents } = await resolveSources(parseConfig(ex.config).sources, ex.files, noNetwork);
