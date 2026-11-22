@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.1] - 2026-11-22
+
+### Bug Fixes
+
+- *(action)* Escape annotation data portably on bash 3.2
+- *(action)* Exit 0 after a successful install
+- *(action)* Verify checksums when sha256sum prefixes the hash with a backslash
+
+### CI
+
+- Exercise the Action's real install path on Linux, macOS and Windows
+
+### Documentation
+
+- Point the Action examples at v0.14.1 and note the v0.14.0 installer bug
+
 ## [0.14.0] - 2026-11-22
 
 ### CI
