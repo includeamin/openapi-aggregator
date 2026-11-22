@@ -38,6 +38,7 @@
 pub mod bundle;
 pub mod config;
 pub mod error;
+pub mod expand;
 pub mod filter;
 pub mod merge;
 pub mod prepare;
@@ -53,6 +54,7 @@ pub use config::{
     OutputFormat, ServerEntry, Source, TagEntry, TagPrefixStrategy,
 };
 pub use error::Error;
+pub use expand::{glob_base, is_glob};
 pub use filter::{filter_spec, glob_match};
 pub use merge::{merge_specs, merge_specs_with_report, MergeReport};
 pub use prepare::{
