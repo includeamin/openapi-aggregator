@@ -182,6 +182,16 @@ jobs:
         shell: bash
         run: openapi-aggregator --version
 
+  release-scripts:
+    name: Release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -x -P SCRIPTDIR .github/scripts/*.sh
+      - name: Release decision tests
+        run: bash .github/scripts/test-release-flags.sh
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest
