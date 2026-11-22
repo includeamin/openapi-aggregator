@@ -191,6 +191,8 @@ jobs:
         run: shellcheck -x -P SCRIPTDIR .github/scripts/*.sh
       - name: Release decision tests
         run: bash .github/scripts/test-release-flags.sh
+      - name: Publish script tests
+        run: bash .github/scripts/test-publish-crates.sh
 
   docker:
     name: Docker image
