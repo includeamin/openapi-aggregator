@@ -1,0 +1,69 @@
+name: Publish to crates.io
+
+# Used two ways:
+#  - called by the release workflow for feature releases (minor/major), with dry_run: false;
+#  - dispatched by hand to publish an existing tag (catch-up or recovery). Dry run by default.
+# Crates whose exact version is already on crates.io are skipped, so re-running is safe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to publish (empty: the ref the workflow is dispatched on)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Package and verify without uploading"
+        required: false
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag to publish"
+        required: true
+        type: string
+      dry_run:
+        description: "Package and verify without uploading"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish crates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Work out the expected version
+        id: expected
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          expected=""
+          if printf '%s' "$REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            expected="${REF#v}"
+          fi
+          echo "version=$expected" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          EXPECTED_VERSION: ${{ steps.expected.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: bash .github/scripts/publish-crates.sh

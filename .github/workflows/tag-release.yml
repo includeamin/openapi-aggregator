@@ -349,3 +349,16 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.version=${{ needs.tag.outputs.version }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [tag, release]
+    # Only feature releases (minor/major, not pre-releases); see .github/scripts/release-flags.sh
+    if: needs.tag.outputs.publish == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish-crates.yml
+    with:
+      ref: ${{ needs.tag.outputs.tag }}
+      dry_run: false
+    secrets: inherit
