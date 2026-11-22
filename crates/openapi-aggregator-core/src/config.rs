@@ -93,6 +93,14 @@ impl TryFrom<RawSource> for Source {
         if let Some(filter) = &raw.filter {
             filter.validate(&format!("{label} filter"))?;
         }
+        if let (Some(path), Some(_)) = (&raw.path, &raw.name) {
+            let pattern = path.to_string_lossy();
+            if crate::expand::is_glob(&pattern) {
+                return Err(format!(
+                    "source pattern '{pattern}': 'name' cannot be combined with a glob path"
+                ));
+            }
+        }
         match (raw.url, raw.path) {
             (Some(url), None) => Ok(Source::Http {
                 name: raw.name,
@@ -510,5 +518,24 @@ merge:
             let err = Config::from_yaml(&yaml).unwrap_err().to_string();
             assert!(err.contains(fragment), "expected '{fragment}' in: {err}");
         }
+    }
+
+    #[test]
+    fn glob_paths_cannot_have_a_name() {
+        let err = Config::from_yaml("sources:\n  - path: 'specs/*.yaml'\n    name: x\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "source pattern 'specs/*.yaml': 'name' cannot be combined with a glob path"
+            ),
+            "{err}"
+        );
+        let ok = Config::from_yaml(
+            "sources:\n  - path: 'specs/*.yaml'\n    tag_prefix: p\n    filter:\n      exclude: {tags: [internal]}\n    additional_blocks: {x-a: 1}\n",
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+        let url = Config::from_yaml("sources:\n  - url: 'https://x.test/*'\n    name: x\n");
+        assert!(url.is_ok(), "{url:?}");
     }
 }
