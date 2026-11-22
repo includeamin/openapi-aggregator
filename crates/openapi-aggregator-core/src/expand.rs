@@ -3,8 +3,11 @@
 //! Pure and I/O-free: the caller supplies the candidate file paths (the CLI lists a real
 //! directory, the playground passes its workspace file names).
 
-// The internal helpers are used by `expand_sources` in the next step.
-#![allow(dead_code)]
+use std::path::PathBuf;
+
+use crate::config::{Config, Source};
+use crate::error::Error;
+use crate::filter::glob_match;
 
 /// Whether a source path is a glob pattern (contains `*`).
 pub fn is_glob(path: &str) -> bool {
@@ -77,6 +80,65 @@ pub(crate) fn is_hidden_below(base: &str, pattern: &str, candidate: &str) -> boo
         })
 }
 
+/// Replace every glob file source by one source per matching candidate path.
+///
+/// Matches are sorted and take the pattern's position; non-glob sources are untouched. The
+/// pattern's `tag_prefix`, `additional_blocks` and `filter` apply to every match. A pattern
+/// without matches is an error. Pattern and candidates must be in the same normalised form.
+pub fn expand_sources(config: Config, candidates: &[String]) -> Result<Config, Error> {
+    let Config {
+        sources,
+        output,
+        merge,
+    } = config;
+    let mut expanded = Vec::with_capacity(sources.len());
+    for source in sources {
+        let Source::File {
+            path,
+            tag_prefix,
+            additional_blocks,
+            filter,
+            ..
+        } = &source
+        else {
+            expanded.push(source);
+            continue;
+        };
+        let pattern = path.to_string_lossy().into_owned();
+        if !is_glob(&pattern) {
+            expanded.push(source);
+            continue;
+        }
+
+        let base = glob_base(&pattern);
+        let mut matches: Vec<&String> = candidates
+            .iter()
+            .filter(|c| glob_match(&pattern, c) && !is_hidden_below(base, &pattern, c))
+            .collect();
+        matches.sort();
+        matches.dedup();
+        if matches.is_empty() {
+            return Err(Error::Config(format!(
+                "source pattern '{pattern}' matched no files"
+            )));
+        }
+        for matched in matches {
+            expanded.push(Source::File {
+                name: Some(source_name(&pattern, matched)),
+                path: PathBuf::from(matched),
+                tag_prefix: tag_prefix.clone(),
+                additional_blocks: additional_blocks.clone(),
+                filter: filter.clone(),
+            });
+        }
+    }
+    Ok(Config {
+        sources: expanded,
+        output,
+        merge,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +200,153 @@ mod tests {
             ".cfg/specs/*.yaml",
             ".cfg/specs/a.yaml"
         ));
+    }
+
+    fn config(yaml: &str) -> Config {
+        Config::from_yaml(yaml).unwrap()
+    }
+
+    fn files(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    fn describe(config: &Config) -> Vec<(String, String)> {
+        config
+            .sources
+            .iter()
+            .map(|s| match s {
+                Source::File { path, .. } => {
+                    (s.display_name(), path.to_string_lossy().into_owned())
+                }
+                Source::Http { url, .. } => (s.display_name(), url.clone()),
+            })
+            .collect()
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    #[test]
+    fn flat_glob_expands_sorted() {
+        let cfg = config("sources:\n  - path: 'specs/*.yaml'\n");
+        let candidates = files(&[
+            "specs/users.yaml",
+            "specs/billing.yaml",
+            "specs/nested/x.yaml",
+            "other/a.yaml",
+        ]);
+        let out = expand_sources(cfg, &candidates).unwrap();
+        assert_eq!(
+            describe(&out),
+            vec![
+                pair("billing", "specs/billing.yaml"),
+                pair("users", "specs/users.yaml")
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_and_double_star_patterns() {
+        let candidates = files(&[
+            "services/users/api.yaml",
+            "services/billing/api.yaml",
+            "services/billing/other.yaml",
+        ]);
+        let out = expand_sources(
+            config("sources:\n  - path: 'services/*/api.yaml'\n"),
+            &candidates,
+        )
+        .unwrap();
+        assert_eq!(
+            describe(&out),
+            vec![
+                pair("billing_api", "services/billing/api.yaml"),
+                pair("users_api", "services/users/api.yaml")
+            ]
+        );
+
+        let deep = files(&["specs/a/b.yaml", "specs/c.yaml"]);
+        let out = expand_sources(config("sources:\n  - path: 'specs/**/*.yaml'\n"), &deep).unwrap();
+        assert_eq!(describe(&out), vec![pair("a_b", "specs/a/b.yaml")]);
+    }
+
+    #[test]
+    fn explicit_sources_keep_their_position_and_names() {
+        let cfg = config("sources:\n  - name: first\n    path: z.yaml\n  - path: 'specs/*.yaml'\n  - name: last\n    url: https://x.test/*\n");
+        let out = expand_sources(cfg, &files(&["specs/b.yaml", "specs/a.yaml"])).unwrap();
+        assert_eq!(
+            describe(&out),
+            vec![
+                pair("first", "z.yaml"),
+                pair("a", "specs/a.yaml"),
+                pair("b", "specs/b.yaml"),
+                pair("last", "https://x.test/*")
+            ]
+        );
+    }
+
+    #[test]
+    fn options_apply_to_every_match() {
+        let cfg = config("sources:\n  - path: 'specs/*.yaml'\n    tag_prefix: p\n    additional_blocks: {x-a: 1}\n    filter:\n      exclude: {tags: [internal]}\n");
+        let out = expand_sources(cfg, &files(&["specs/a.yaml", "specs/b.yaml"])).unwrap();
+        assert_eq!(out.sources.len(), 2);
+        for source in &out.sources {
+            assert_eq!(source.tag_prefix(), "p");
+            assert!(source.filter().is_some());
+            match source {
+                Source::File {
+                    additional_blocks, ..
+                } => assert!(additional_blocks.is_some()),
+                Source::Http { .. } => panic!("expected a file source"),
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_entries_are_skipped_unless_the_pattern_asks() {
+        let candidates = files(&["specs/.hidden.yaml", "specs/.git/x.yaml", "specs/a.yaml"]);
+        let out =
+            expand_sources(config("sources:\n  - path: 'specs/*.yaml'\n"), &candidates).unwrap();
+        assert_eq!(describe(&out), vec![pair("a", "specs/a.yaml")]);
+        let dotted =
+            expand_sources(config("sources:\n  - path: 'specs/.*.yaml'\n"), &candidates).unwrap();
+        assert_eq!(
+            describe(&dotted),
+            vec![pair(".hidden", "specs/.hidden.yaml")]
+        );
+        // `specs/.git/x.yaml` is the only file `**` could match, and it is hidden
+        let deep = expand_sources(
+            config("sources:\n  - path: 'specs/**/*.yaml'\n"),
+            &candidates,
+        );
+        assert!(deep.is_err());
+    }
+
+    #[test]
+    fn no_match_is_an_error() {
+        let err = expand_sources(
+            config("sources:\n  - path: 'specs/*.yaml'\n"),
+            &files(&["other/a.yaml"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("source pattern 'specs/*.yaml' matched no files"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn configs_without_globs_are_unchanged_and_expansion_is_idempotent() {
+        let plain = config("sources:\n  - path: a.yaml\n  - url: https://x.test/a\n");
+        let before = describe(&plain);
+        assert_eq!(describe(&expand_sources(plain, &[]).unwrap()), before);
+
+        let candidates = files(&["specs/a.yaml", "specs/b.yaml"]);
+        let once =
+            expand_sources(config("sources:\n  - path: 'specs/*.yaml'\n"), &candidates).unwrap();
+        let twice = expand_sources(once.clone(), &candidates).unwrap();
+        assert_eq!(describe(&once), describe(&twice));
     }
 }
