@@ -12,6 +12,7 @@ Available as both a **Rust library** and a **CLI tool**.
 - **External `$ref`s** – specs split across files or URLs are bundled per source before merging (CLI sandboxed to the config directory)
 - **Validation and CI check** – `--check` validates the merged spec and fails the build when it is invalid or when a committed output file is stale
 - **Operation filters** – hide internal endpoints (by path glob, tag, `operationId` or an `x-` flag), globally or per source, with unused components and tags pruned
+- **GitHub Action and Docker image** – one CI step regenerates the spec and fails when the committed one is stale; a multi-arch image is published on every release
 - **Multiple source types** – local YAML files, local JSON files, and HTTP endpoints (with custom headers)
 - **Config-file driven** – define sources and merge options in a single YAML config
 - **Conflict resolution** – choose between `error`, `overwrite`, or `rename` strategies for duplicate paths and component names
@@ -215,6 +216,63 @@ sources:
 - **Globs:** `*` matches within one path segment (`/admin/*` does not match `/admin/a/b`), `**` matches across segments (`/internal/**`). Everything else, including `{id}`, is literal. Globs apply to `paths` only, not `webhooks`.
 - **Cleanup:** a path left with no operations is removed. Components (schemas, parameters, responses, ...), security schemes and tags that were used before filtering and are unused afterwards are pruned. Things that were never referenced to begin with are left alone.
 - **Not scrubbed:** the filter does not look inside descriptions, examples, `servers`, `info` or vendor extensions, so check those for internal details yourself. External documents referenced only by hidden operations are still loaded.
+
+## GitHub Action
+
+One step that regenerates the aggregated spec, validates it, and fails the build when the committed spec is stale:
+
+```yaml
+jobs:
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: includeamin/openapi-aggregator@v0.14.0
+        with:
+          config: openapi-aggregator.yaml
+          output: openapi.yaml        # the committed spec to compare against
+          deny-warnings: true
+```
+
+Pin an exact release: the action installs **the version you pin** (`@v0.14.0` installs `v0.14.0`), downloads that release's binary and verifies it against the release's `checksums.txt` before running it. The Action is available from the first release that contains it (`v0.14.0` or later).
+
+| Input | Default | Meaning |
+|-------|---------|---------|
+| `config` | `openapi-aggregator.yaml` | Config file |
+| `output` | | The committed merged spec. In check mode it is compared with a fresh merge; leave empty to only validate |
+| `deny-warnings` | `false` | Fail on warnings too |
+| `allow-outside-config-dir` | `false` | Let external `$ref`s read files outside the config directory |
+| `working-directory` | `.` | Directory to run in |
+| `version` | the pinned version, or the latest release when pinned to a branch | Release to install |
+| `mode` | `check` | `check` never writes; `write` regenerates `output` |
+| `binary` | | Path to an existing binary; skips the download and checksum verification |
+
+The `result` output is `passed`, `invalid` or `stale` (check mode) and is set even when the step fails, so `continue-on-error` workflows can react to it. On failure the step prints an annotation that says how to fix it, and the diff or findings appear in the job summary.
+
+To keep a generated spec in sync automatically, regenerate it and commit the result:
+
+```yaml
+      - uses: includeamin/openapi-aggregator@v0.14.0
+        with:
+          output: openapi.yaml
+          mode: write
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add openapi.yaml
+          git diff --cached --quiet || { git commit -m "chore: regenerate openapi.yaml" && git push; }
+```
+
+## Docker
+
+A small multi-arch (`linux/amd64`, `linux/arm64`) image containing just the static binary is published to GitHub Container Registry with every release. It runs as a non-root user with `/work` as the working directory:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/includeamin/openapi-aggregator:latest \
+  --check -c openapi-aggregator.yaml -o openapi.yaml
+```
+
+Use a version tag (for example `:0.14.0`) for reproducible builds. Pre-releases are tagged by version only and never move `:latest`. Remember that `-v "$PWD:/work"` mounts read-write; add `:ro` when you only use `--check`.
 
 ## Library Usage
 
