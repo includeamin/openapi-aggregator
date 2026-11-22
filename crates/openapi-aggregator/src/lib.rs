@@ -13,11 +13,12 @@ pub mod source;
 
 pub use error::Error;
 pub use openapi_aggregator_core::{
-    bundle_source, check_document_cap, config, filter_source, is_url, merge, merge_specs,
-    merge_specs_with_report, missing_documents, parse_content, prepare_source,
-    prepare_source_with_notes, resolve_location, validate, Config, ConflictStrategy, Finding,
-    InfoOverride, MergeConfig, MergeReport, MissingDocument, OutputConfig, OutputFormat,
-    PreparedSource, ServerEntry, Severity, Source, TagEntry, TagPrefixStrategy,
+    bundle_source, check_document_cap, config, filter_source, is_url, merge, merge_sources,
+    merge_specs, merge_specs_with_report, missing_documents, parse_content, prepare_source,
+    prepare_source_with_notes, resolve_location, resolve_path_prefix, validate, Config,
+    ConflictStrategy, Finding, InfoOverride, MergeConfig, MergeReport, MissingDocument,
+    OutputConfig, OutputFormat, PreparedSource, ServerEntry, Severity, Source, SourceSpec,
+    TagEntry, TagPrefixStrategy,
 };
 pub use source::load_source;
 
@@ -86,10 +87,15 @@ pub async fn aggregate_with_options(
     let mut specs = Vec::new();
     for (src, prepared) in config.sources.iter().zip(prepared) {
         notes.extend(prepared.notes);
-        specs.push((prepared.name, src.tag_prefix(), prepared.spec));
+        specs.push(SourceSpec {
+            name: prepared.name,
+            tag_prefix: src.tag_prefix(),
+            path_prefix: src.path_prefix().map(String::from),
+            spec: prepared.spec,
+        });
     }
 
-    let mut report = merge_specs_with_report(specs, &config.merge)?;
+    let mut report = merge_sources(specs, &config.merge)?;
     notes.append(&mut report.warnings);
     report.warnings = notes;
     Ok(report)

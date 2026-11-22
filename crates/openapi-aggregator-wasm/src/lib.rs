@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use openapi_aggregator_core::{
-    bundle_source, check_document_cap, expand_sources, filter_source, is_glob,
-    merge_specs_with_report, missing_documents, parse_content, prepare_source_with_notes, validate,
-    Config, Error, OutputFormat, PreparedSource, Source,
+    bundle_source, check_document_cap, expand_sources, filter_source, is_glob, merge_sources,
+    missing_documents, parse_content, prepare_source_with_notes, validate, Config, Error,
+    OutputFormat, PreparedSource, Source, SourceSpec,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -236,10 +236,15 @@ pub fn aggregate_contents_with_files(
             bundle_source(prepared, &base_of(source), &docs).map_err(|e| e.to_string())?;
         let prepared = filter_source(prepared, config.merge.filter.as_ref(), source.filter());
         notes.extend(prepared.notes);
-        specs.push((prepared.name, source.tag_prefix(), prepared.spec));
+        specs.push(SourceSpec {
+            name: prepared.name,
+            tag_prefix: source.tag_prefix(),
+            path_prefix: source.path_prefix().map(String::from),
+            spec: prepared.spec,
+        });
     }
 
-    let mut report = merge_specs_with_report(specs, &config.merge).map_err(|e| e.to_string())?;
+    let mut report = merge_sources(specs, &config.merge).map_err(|e| e.to_string())?;
     notes.append(&mut report.warnings);
     report.warnings = notes;
     let text = match config.output.format {
@@ -629,5 +634,17 @@ mod tests {
         let err = aggregate_contents_with_files(config, vec![PETS.into()], HashMap::new(), &files)
             .unwrap_err();
         assert!(err.contains("expected 2 source contents"), "{err}");
+    }
+
+    #[test]
+    fn path_prefixes_apply_in_the_output() {
+        let config = "sources:\n  - name: a\n    path: a.yaml\n    path_prefix: /v2\n  - name: b\n    path: b.yaml\n";
+        let out =
+            aggregate_contents(config, vec![PETS.into(), PETS.into()], HashMap::new()).unwrap();
+        assert!(
+            out.text.contains("/v2/pets:") && out.text.contains("\n  /pets:"),
+            "{}",
+            out.text
+        );
     }
 }

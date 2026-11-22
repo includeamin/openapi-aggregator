@@ -1089,3 +1089,91 @@ async fn expanded_sources_still_resolve_and_sandbox_external_refs() {
     let err = run_config(&cfg, false).await.unwrap_err().to_string();
     assert!(err.contains("outside the config directory"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// per-source path prefixes
+// ---------------------------------------------------------------------------
+
+fn prefix_dir(config: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("a.yaml"), &small_spec("A", "/items"));
+    write(&dir.path().join("b.yaml"), &small_spec("B", "/items"));
+    write(&dir.path().join("cfg.yaml"), config);
+    dir
+}
+
+#[tokio::test]
+async fn per_source_prefixes_replace_the_automatic_one() {
+    let dir = prefix_dir(
+        "sources:\n  - name: a\n    path: a.yaml\n    path_prefix: /v2\n  - name: b\n    path: b.yaml\nmerge:\n  prefix_paths: true\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    // both sources define /items; the prefixes keep them apart, with no conflict
+    assert_eq!(merged_paths(&report), vec!["/v2/items", "/b/items"]);
+}
+
+#[tokio::test]
+async fn a_slash_prefix_opts_a_source_out_of_prefix_paths() {
+    let dir = prefix_dir(
+        "sources:\n  - name: a\n    path: a.yaml\n    path_prefix: /\n  - name: b\n    path: b.yaml\nmerge:\n  prefix_paths: true\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(merged_paths(&report), vec!["/items", "/b/items"]);
+}
+
+#[tokio::test]
+async fn a_glob_source_can_use_the_name_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("services/billing/api.yaml"),
+        &small_spec("Billing", "/items"),
+    );
+    write(
+        &dir.path().join("services/users/api.yaml"),
+        &small_spec("Users", "/items"),
+    );
+    write(
+        &dir.path().join("cfg.yaml"),
+        "sources:\n  - path: 'services/*/api.yaml'\n    path_prefix: '/{name}/v1'\n",
+    );
+    let report = run_config(dir.path(), false).await.unwrap();
+    assert_eq!(
+        merged_paths(&report),
+        vec!["/billing_api/v1/items", "/users_api/v1/items"]
+    );
+}
+
+#[tokio::test]
+async fn url_sources_can_have_a_path_prefix() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/openapi.json")
+        .with_body(
+            serde_json::json!({
+                "openapi": "3.0.3",
+                "info": {"title": "Remote", "version": "1"},
+                "paths": {"/things": {"get": {"responses": {"200": {"description": "ok"}}}}}
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    let config = Config::from_yaml(&format!(
+        "sources:\n  - name: remote\n    url: {}/openapi.json\n    path_prefix: /edge\n",
+        server.url()
+    ))
+    .unwrap();
+    let report = aggregate_with_options(&config, &AggregateOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(merged_paths(&report), vec!["/edge/things"]);
+}
+
+#[tokio::test]
+async fn invalid_prefixes_are_rejected_when_the_config_is_loaded() {
+    let dir = prefix_dir("sources:\n  - name: a\n    path: a.yaml\n    path_prefix: v2\n");
+    let err = load_config(&dir.path().join("cfg.yaml"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("must start with '/'"), "{err}");
+}
