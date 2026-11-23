@@ -3,6 +3,10 @@ name: Tag & Release
 on:
   push:
     branches: [main]
+  # A weekly release picks up dependency updates, which `push` runs deliberately skip. It does
+  # nothing when there are no new commits. Tuesday 06:00 UTC, after Dependabot's Monday PRs.
+  schedule:
+    - cron: "0 6 * * 2"
   workflow_dispatch:
     inputs:
       bump:
@@ -88,26 +92,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BUMP_INPUT: ${{ inputs.bump }}
-        run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LAST_TAG" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          COMMIT_COUNT=$(git rev-list "${LAST_TAG}..HEAD" --count)
-          if [ "$COMMIT_COUNT" -eq 0 ] && [ -z "$BUMP_INPUT" ]; then
-            echo "No new commits since ${LAST_TAG}, skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif [ "$EVENT_NAME" = "push" ] \
-            && [ "$(git log --format=%s "${LAST_TAG}..HEAD" | bash .github/scripts/release-skip.sh)" = "skip=true" ]; then
-            # Dependency updates ship with the next real release. Run this workflow by hand
-            # (workflow_dispatch) to publish one immediately, e.g. for a security fix.
-            echo "Only dependency updates since ${LAST_TAG}, skipping the release."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "${COMMIT_COUNT} commit(s) since ${LAST_TAG}"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash .github/scripts/skip-check.sh >> "$GITHUB_OUTPUT"
 
       - name: Calculate next version
         id: version
