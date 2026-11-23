@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.3] - 2026-11-23
+
+### CI
+
+- Bump the actions group with 10 updates
+
+### Miscellaneous
+
+- *(deps)* Bump thiserror from 1.0.69 to 2.0.20
+- *(deps)* Bump the web-minor-and-patch group in /web with 8 updates
+
 ## [0.16.2] - 2026-11-23
 
 ### Miscellaneous
