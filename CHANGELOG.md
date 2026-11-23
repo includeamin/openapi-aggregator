@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.5] - 2026-11-23
+
+### CI
+
+- *(release)* Serialise release runs and skip dependency-only releases
+
 ## [0.16.4] - 2026-11-23
 
 ### Miscellaneous
