@@ -25,7 +25,7 @@ openapi-aggregator-core.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
-similar = "2"
+similar = "3"
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 
