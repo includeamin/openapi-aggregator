@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.4] - 2026-11-23
+
+### Miscellaneous
+
+- *(deps)* Bump rustls from 0.23.44 to 0.23.46
+
 ## [0.16.3] - 2026-11-23
 
 ### CI
