@@ -30,6 +30,12 @@ jobs:
     name: Bump, Changelog & Tag
     # Skip runs triggered by the release bot's own commits
     if: "!contains(github.event.head_commit.message, 'chore(release)')"
+    # Every run commits a version bump to main, so concurrent runs would collide (one is
+    # rejected because main moved). Queue them instead: a waiting run is replaced by a newer
+    # one, which is fine because each run releases everything since the last tag.
+    concurrency:
+      group: tag-release
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -39,8 +45,11 @@ jobs:
       # "true" only for feature releases (minor/major, not pre-releases); empty or "false" otherwise
       publish: ${{ steps.flags.outputs.publish }}
     steps:
+      # The latest main, not the commit that triggered the run: a queued run must see the
+      # version bump committed by the run before it.
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Configure git
@@ -74,8 +83,11 @@ jobs:
           echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
           echo "Detected bump type: ${BUMP}"
 
-      - name: Skip if no new commits
+      - name: Skip if there is nothing to release
         id: skip_check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BUMP_INPUT: ${{ inputs.bump }}
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -z "$LAST_TAG" ]; then
@@ -83,8 +95,14 @@ jobs:
             exit 0
           fi
           COMMIT_COUNT=$(git rev-list "${LAST_TAG}..HEAD" --count)
-          if [ "$COMMIT_COUNT" -eq 0 ] && [ -z "${{ inputs.bump }}" ]; then
+          if [ "$COMMIT_COUNT" -eq 0 ] && [ -z "$BUMP_INPUT" ]; then
             echo "No new commits since ${LAST_TAG}, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "push" ] \
+            && [ "$(git log --format=%s "${LAST_TAG}..HEAD" | bash .github/scripts/release-skip.sh)" = "skip=true" ]; then
+            # Dependency updates ship with the next real release. Run this workflow by hand
+            # (workflow_dispatch) to publish one immediately, e.g. for a security fix.
+            echo "Only dependency updates since ${LAST_TAG}, skipping the release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "${COMMIT_COUNT} commit(s) since ${LAST_TAG}"

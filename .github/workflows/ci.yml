@@ -193,6 +193,8 @@ jobs:
         run: bash .github/scripts/test-release-flags.sh
       - name: Publish script tests
         run: bash .github/scripts/test-publish-crates.sh
+      - name: Dependency-only release skip tests
+        run: bash .github/scripts/test-release-skip.sh
 
   docker:
     name: Docker image

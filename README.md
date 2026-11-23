@@ -66,6 +66,8 @@ Download from [GitHub Releases](../../releases). Binaries are available for Linu
 
 Every release publishes the GitHub Release binaries (with `checksums.txt`) and the Docker image. **Feature releases** (a minor or major version, for example `0.16.0`) are also published to crates.io; patch releases and dependency updates are not, because crates.io versions can never be deleted. To get a patch release, use the binary, the Docker image or `cargo install --git https://github.com/includeamin/openapi-aggregator --tag <version> openapi-aggregator`.
 
+Merges that only update dependencies (Dependabot's `chore(deps)` and `ci: bump` commits) do not create a release: they ship with the next release that contains a real change. To publish one immediately, for example for a security fix, run the **Tag & Release** workflow by hand from the Actions tab.
+
 ## CLI Usage
 
 ```sh
