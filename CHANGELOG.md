@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.6] - 2026-11-23
+
+### CI
+
+- *(release)* Publish a weekly release for dependency updates
+
 ## [0.16.5] - 2026-11-23
 
 ### CI
