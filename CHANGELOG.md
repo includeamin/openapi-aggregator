@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] - 2026-11-23
+
+### Documentation
+
+- Document per-source path prefixes
+
+### Features
+
+- *(core)* Add a per-source path_prefix to the configuration
+- *(core)* Merge sources with a per-source path prefix
+- Apply per-source path prefixes when aggregating
+- *(web)* Add a path prefixes example
+
 ## [0.15.3] - 2026-11-22
 
 ### Bug Fixes
