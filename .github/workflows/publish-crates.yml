@@ -47,12 +47,12 @@ jobs:
       # ref being published: older tags do not contain it. It is copied outside the repository so
       # `cargo publish` does not see an uncommitted directory.
       - name: Check out the release tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Stash the release scripts
         run: cp -r .github/scripts "$RUNNER_TEMP/release-scripts"
 
       - name: Check out the ref to publish
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
