@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] - 2026-11-23
+
+### Miscellaneous
+
+- *(deps)* Bump the rust-minor-and-patch group with 3 updates
+
 ## [0.16.0] - 2026-11-23
 
 ### Documentation
